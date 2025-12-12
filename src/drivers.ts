@@ -138,7 +138,7 @@ export const drivers: DriverConfig[] = [
   {
     id: 19,
     name: 'PTI TEST UZ',
-    chatId: -1003474651531,      // UZ test chat id
+    chatId: -1003321162348,      // UZ test chat id
     language: 'uz',
     trucks: ['Truck 705'],
   },
