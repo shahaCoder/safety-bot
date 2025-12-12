@@ -186,24 +186,24 @@ function getTopUnifiedEventTypes(
 }
 
 /**
- * Format example severe speeding interval for display.
+ * Format example severe speeding interval for display (plain text, no Markdown).
  */
 function formatExampleSpeedingInterval(interval: SpeedingInterval): string {
   const lines: string[] = [];
 
-  lines.push(`*ID:* \`speeding:${interval.assetId}:${interval.startTime}:${interval.endTime}\``);
-  lines.push(`*Asset ID:* ${interval.assetId}`);
-  lines.push(`*Start Time:* ${new Date(interval.startTime).toISOString()}`);
-  lines.push(`*End Time:* ${new Date(interval.endTime).toISOString()}`);
-  lines.push(`*Severity:* ${interval.severity || 'N/A'}`);
+  lines.push(`ID: speeding:${interval.assetId}:${interval.startTime}:${interval.endTime}`);
+  lines.push(`Asset ID: ${interval.assetId}`);
+  lines.push(`Start Time: ${new Date(interval.startTime).toISOString()}`);
+  lines.push(`End Time: ${new Date(interval.endTime).toISOString()}`);
+  lines.push(`Severity: ${interval.severity || 'N/A'}`);
   lines.push(
-    `*Max Speed:* ${interval.maxSpeedMph != null ? `${interval.maxSpeedMph} mph` : 'N/A'}`
+    `Max Speed: ${interval.maxSpeedMph != null ? `${interval.maxSpeedMph} mph` : 'N/A'}`
   );
   lines.push(
-    `*Speed Limit:* ${interval.speedLimitMph != null ? `${interval.speedLimitMph} mph` : 'N/A'}`
+    `Speed Limit: ${interval.speedLimitMph != null ? `${interval.speedLimitMph} mph` : 'N/A'}`
   );
-  lines.push(`*Driver ID:* ${interval.driverId || 'N/A'}`);
-  lines.push(`*Video URL:* N/A (speeding intervals typically don't include video)`);
+  lines.push(`Driver ID: ${interval.driverId || 'N/A'}`);
+  lines.push(`Video URL: N/A (speeding intervals typically don't include video)`);
 
   return lines.join('\n');
 }
@@ -265,36 +265,37 @@ export async function handleDebugSafety(ctx: Context): Promise<void> {
   const exampleSevereSpeeding =
     speedingIntervals.length > 0 ? speedingIntervals[0] : null;
 
-  // Build response
+  // Build response (plain text, no Markdown to avoid parsing errors)
   const responseLines: string[] = [];
 
-  responseLines.push(`📊 *Safety Events Diagnostics*`);
-  responseLines.push(`*Time Window:* Last ${hours} hours`);
+  responseLines.push(`📊 Safety Events Diagnostics`);
+  responseLines.push(`Time Window: Last ${hours} hours`);
   responseLines.push('');
-  responseLines.push(`*Safety Events (raw):* ${totalSafetyEvents}`);
-  responseLines.push(`*Safety Events (normalized):* ${normalizedSafety.length}`);
-  responseLines.push(`*Speeding Intervals:* ${totalSpeedingIntervals}`);
-  responseLines.push(`*Severe Speeding Count:* ${severeSpeedingCount}`);
+  responseLines.push(`Safety Events (raw): ${totalSafetyEvents}`);
+  responseLines.push(`Safety Events (normalized): ${normalizedSafety.length}`);
+  responseLines.push(`Speeding Intervals: ${totalSpeedingIntervals}`);
+  responseLines.push(`Severe Speeding Count: ${severeSpeedingCount}`);
   responseLines.push('');
 
   if (topTypes.length > 0) {
-    responseLines.push(`*Top Event Types (merged):*`);
+    responseLines.push(`Top Event Types (merged):`);
     for (const { type, count } of topTypes) {
-      responseLines.push(`  • ${type}: ${count}`);
+      responseLines.push(`  - ${type}: ${count}`);
     }
     responseLines.push('');
   }
 
   if (exampleSevereSpeeding) {
-    responseLines.push(`*Example Severe Speeding Interval:*`);
+    responseLines.push(`Example Severe Speeding Interval:`);
     responseLines.push(formatExampleSpeedingInterval(exampleSevereSpeeding));
   } else {
-    responseLines.push(`*Example Severe Speeding Interval:* None found`);
+    responseLines.push(`Example Severe Speeding Interval: None found`);
   }
 
   const response = responseLines.join('\n');
 
   // Reply ONLY in private chat (already guarded by middleware)
-  await ctx.reply(response, { parse_mode: 'Markdown' });
+  // Use plain text to avoid Markdown parsing errors
+  await ctx.reply(response, { parse_mode: undefined });
 }
 

@@ -1,6 +1,13 @@
-import 'dotenv/config';
-import { Telegraf } from 'telegraf';
+// dotenv MUST be the first import to ensure env vars are loaded before any other code reads process.env
 import dotenv from 'dotenv';
+dotenv.config({ path: '/opt/pti-bot/.env' });
+
+console.log('[ENV] loaded', {
+  cwd: process.cwd(),
+  hasAssetIds: !!process.env.SAMSARA_ASSET_IDS,
+});
+
+import { Telegraf } from 'telegraf';
 import cron from 'node-cron';
 import { Chat } from '@prisma/client';
 import * as fs from 'fs';
@@ -33,8 +40,6 @@ import {
   mergeAndDedupeEvents,
   UnifiedEvent,
 } from './services/eventNormalize';
-
-dotenv.config();
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 if (!BOT_TOKEN) {
