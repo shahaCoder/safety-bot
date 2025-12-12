@@ -72,14 +72,11 @@ model SafetyEventLog {
   @@index([timeLocal])
 }
 
-// SentEvent model - stores sent event IDs to prevent duplicates
 model SentEvent {
-  id        String   @id // Stable event ID (e.g., "speeding:assetId:startTime:endTime")
-  type      String   // Event type (e.g., "severe_speeding")
-  sentAt    DateTime @default(now())
+  id     String   @id
+  type   String
+  sentAt DateTime @default(now()) @map("sent_at")
 
   @@map("sent_events")
-  @@index([type])
-  @@index([sentAt])
 }
 
