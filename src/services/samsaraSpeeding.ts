@@ -24,8 +24,8 @@ let assetIdsCache: { ids: string[]; expiresAt: number } | null = null;
 const ASSET_IDS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 /**
- * Get asset IDs from environment or fetch from Samsara.
- * Falls back to SAMSARA_ASSET_IDS env var if available.
+ * Get asset IDs from environment.
+ * Reads from SAMSARA_ASSET_IDS env var (comma-separated).
  * 
  * @returns Array of asset IDs
  */
@@ -35,14 +35,25 @@ async function getAssetIds(): Promise<string[]> {
     return assetIdsCache.ids;
   }
 
-  // Try to fetch from Samsara API (if we have a way to list assets)
-  // For now, fall back to environment variable
-  const envAssetIds = process.env.SAM_SARA_ASSET_IDS;
-  if (envAssetIds) {
-    const ids = envAssetIds
+  // Read from environment variable (EXACTLY SAMSARA_ASSET_IDS)
+  const raw = process.env.SAMSARA_ASSET_IDS;
+  
+  // Debug log (once, when cache is empty)
+  if (!assetIdsCache) {
+    console.log(`[SAMSARA] Reading SAMSARA_ASSET_IDS: raw length=${raw?.length ?? 0}, exists=${!!raw}`);
+  }
+
+  if (raw) {
+    // Parse as comma-separated list
+    const ids = raw
       .split(',')
-      .map((id) => id.trim())
-      .filter((id) => id.length > 0);
+      .map((s) => s.trim())
+      .filter(Boolean);
+    
+    // Debug log parsed result
+    if (!assetIdsCache) {
+      console.log(`[SAMSARA] Parsed assetIds: count=${ids.length}`);
+    }
     
     if (ids.length > 0) {
       // Cache the result
@@ -57,7 +68,7 @@ async function getAssetIds(): Promise<string[]> {
 
   // If no asset IDs available, log warning and return empty
   console.warn(
-    '[SAMSARA] No asset IDs available. Set SAMSARA_ASSET_IDS env var (comma-separated) or implement asset listing.'
+    '[SAMSARA] No asset IDs available. Set SAMSARA_ASSET_IDS env var (comma-separated).'
   );
   return [];
 }
@@ -116,6 +127,7 @@ export async function fetchSpeedingIntervals(
     assetIds = await getAssetIds();
   }
 
+  // Check using length (not truthy check)
   if (assetIds.length === 0) {
     console.warn('[SAMSARA] No asset IDs available for speeding intervals fetch');
     return { total: 0, severe: [] };

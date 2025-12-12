@@ -1,7 +1,5 @@
 import axios from "axios";
-import * as dotenv from "dotenv";
-
-dotenv.config();
+// dotenv is loaded in entrypoint (src/index.ts), no need to load here
 
 export interface SafetyEvent {
   id: string;
