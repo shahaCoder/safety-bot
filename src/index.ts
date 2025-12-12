@@ -31,6 +31,17 @@ type LanguageCode = 'en' | 'ru' | 'uz';
 
 // ================== ГЛОБАЛЬНЫЕ ФИЛЬТРЫ ==================
 
+async function isChatAdmin(ctx: any): Promise<boolean> {
+  if (!ctx.chat || !ctx.from) return false;
+
+  const admins = await ctx.telegram.getChatAdministrators(ctx.chat.id);
+  return admins.some(
+    (admin: any) =>
+      admin.user.id === ctx.from.id &&
+      (admin.status === 'administrator' || admin.status === 'creator'),
+  );
+}
+
 // Игнорировать все личные чаты 
 bot.use((ctx, next) => {
   if (ctx.chat?.type === 'private') {
@@ -164,156 +175,94 @@ async function isUserAdmin(
 }
 
 bot.command('setdriver', async (ctx) => {
-  // Only work in groups/supergroups, ignore private chats
-  if (ctx.chat?.type === 'private') {
-    return; // Silently ignore
-  }
+  if (ctx.chat?.type === 'private') return;
 
-  const chatId = ctx.chat?.id;
-  if (!chatId) {
+  const isAdmin = await isChatAdmin(ctx);
+  if (!isAdmin) {
+    await ctx.reply('❌ Only group admins can use this command.');
     return;
   }
 
-  // Optional: Uncomment to restrict to admins only
-  // const userId = ctx.from?.id;
-  // if (!userId || !(await isUserAdmin(chatId, userId))) {
-  //   await ctx.reply('❌ Only administrators can use this command.');
-  //   return;
-  // }
-
-  // Must be used as a reply to a message
-  const repliedMessage = ctx.message.reply_to_message;
-  if (!repliedMessage || !repliedMessage.from) {
-    await ctx.reply(
-      "❌ Reply to the driver's message and type /setdriver"
-    );
+  const reply = ctx.message?.reply_to_message;
+  if (!reply || !reply.from) {
+    await ctx.reply('❌ Reply to the driver message and type /setdriver');
     return;
   }
 
-  const targetUser = repliedMessage.from;
+  const user = reply.from;
 
-  try {
-    const telegramChatId = BigInt(chatId);
-    const userData = {
-      id: BigInt(targetUser.id),
-      firstName: targetUser.first_name ?? null,
-      lastName: targetUser.last_name ?? null,
-      username: targetUser.username ?? null,
-    };
+  const result = await setChatDriver(BigInt(ctx.chat.id), {
+    id: BigInt(user.id),
+    firstName: user.first_name,
+    lastName: user.last_name,
+    username: user.username ?? null,
+  });
 
-    console.log(
-      `🔧 Setting driver for chat ${chatId}: ${userData.firstName} ${userData.lastName || ''} (@${userData.username || 'no username'})`
-    );
-
-    const updatedChat = await setChatDriver(telegramChatId, userData);
-
-    if (!updatedChat) {
-      await ctx.reply(
-        '❌ This chat is not registered in DB. Add chat first.'
-      );
-      return;
-    }
-
-    const driverName = `${userData.firstName || ''} ${userData.lastName || ''}`.trim() || 'Driver';
-    const usernameDisplay = userData.username
-      ? `@${userData.username}`
-      : 'no username';
-
-    await ctx.reply(
-      `✅ Driver set for this group: ${driverName} (${usernameDisplay})`
-    );
-  } catch (err) {
-    console.error('❌ Error setting driver:', err);
-    await ctx.reply('❌ Failed to set driver.');
+  if (!result) {
+    await ctx.reply('❌ This chat is not registered in the database.');
+    return;
   }
+
+  const name = [user.first_name, user.last_name].filter(Boolean).join(' ');
+  const uname = user.username ? `@${user.username}` : '(no username)';
+
+  await ctx.reply(`✅ Driver set for this group:\n${name} ${uname}`);
 });
+
 
 bot.command('getdriver', async (ctx) => {
-  // Only work in groups/supergroups, ignore private chats
-  if (ctx.chat?.type === 'private') {
-    return; // Silently ignore
-  }
+  if (ctx.chat?.type === 'private') return;
 
-  const chatId = ctx.chat?.id;
-  if (!chatId) {
+  const isAdmin = await isChatAdmin(ctx);
+  if (!isAdmin) {
+    await ctx.reply('❌ Only group admins can use this command.');
     return;
   }
 
-  try {
-    const telegramChatId = BigInt(chatId);
-    const chat = await findChatByTelegramChatId(telegramChatId);
-
-    if (!chat) {
-      await ctx.reply('❌ Chat not found in database.');
-      return;
-    }
-
-    const chatWithDriver = chat as Chat & {
-      driverTgUserId?: bigint | null;
-      driverFirstName?: string | null;
-      driverLastName?: string | null;
-      driverUsername?: string | null;
-    };
-
-    if (chatWithDriver.driverTgUserId) {
-      const firstName = chatWithDriver.driverFirstName || '';
-      const lastName = chatWithDriver.driverLastName || '';
-      const fullName = `${firstName} ${lastName}`.trim() || 'Driver';
-      const username = chatWithDriver.driverUsername
-        ? `@${chatWithDriver.driverUsername}`
-        : '';
-      const usernamePart = username ? ` ${username}` : '';
-
-      await ctx.reply(
-        `Current driver: ${fullName}${usernamePart} (id: ${chatWithDriver.driverTgUserId})`
-      );
-    } else {
-      await ctx.reply(
-        'No driver set for this group. Reply to the driver message and run /setdriver'
-      );
-    }
-  } catch (err) {
-    console.error('❌ Error getting driver:', err);
-    await ctx.reply('❌ Failed to get driver information.');
+  const chat = await findChatByTelegramChatId(BigInt(ctx.chat.id));
+  if (!chat) {
+    await ctx.reply('❌ Chat not found in database.');
+    return;
   }
+
+  const chatWithDriver = chat as Chat & {
+    driverTgUserId?: bigint | null;
+    driverFirstName?: string | null;
+    driverLastName?: string | null;
+    driverUsername?: string | null;
+  };
+
+  if (!chatWithDriver.driverTgUserId) {
+    await ctx.reply('No driver set for this group.');
+    return;
+  }
+
+  const name = [chatWithDriver.driverFirstName, chatWithDriver.driverLastName]
+    .filter(Boolean)
+    .join(' ');
+  const uname = chatWithDriver.driverUsername
+    ? `@${chatWithDriver.driverUsername}`
+    : `[Driver](tg://user?id=${chatWithDriver.driverTgUserId})`;
+
+  await ctx.reply(`Current driver:\n${name}\n${uname}`, {
+    parse_mode: 'Markdown',
+  });
 });
+
 
 bot.command('cleardriver', async (ctx) => {
-  // Only work in groups/supergroups, ignore private chats
-  if (ctx.chat?.type === 'private') {
-    return; // Silently ignore
-  }
+  if (ctx.chat?.type === 'private') return;
 
-  const chatId = ctx.chat?.id;
-  if (!chatId) {
+  const isAdmin = await isChatAdmin(ctx);
+  if (!isAdmin) {
+    await ctx.reply('❌ Only group admins can use this command.');
     return;
   }
 
-  // Optional: Uncomment to restrict to admins only
-  // const userId = ctx.from?.id;
-  // if (!userId || !(await isUserAdmin(chatId, userId))) {
-  //   await ctx.reply('❌ Only administrators can use this command.');
-  //   return;
-  // }
-
-  try {
-    const telegramChatId = BigInt(chatId);
-
-    console.log(`🔧 Clearing driver for chat ${chatId}`);
-
-    const updatedChat = await clearChatDriver(telegramChatId);
-
-    if (!updatedChat) {
-      await ctx.reply('❌ Chat not found in database.');
-      return;
-    }
-
-    await ctx.reply('✅ Driver cleared for this group.');
-  } catch (err) {
-    console.error('❌ Error clearing driver:', err);
-    await ctx.reply('❌ Failed to clear driver.');
-  }
+  await clearChatDriver(BigInt(ctx.chat.id));
+  await ctx.reply('✅ Driver cleared for this group.');
 });
+
 
 // ================== ФИЛЬТР SAFETY-СОБЫТИЙ ==================
 //
