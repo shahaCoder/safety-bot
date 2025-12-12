@@ -3,14 +3,17 @@ import axios from 'axios';
 /**
  * Speeding interval from Samsara API.
  * Based on /speeding-intervals/stream endpoint.
+ * 
+ * Note: API returns data[].intervals[] structure, where each interval
+ * has severityLevel (not severity) and speeds in km/h.
  */
 export type SpeedingInterval = {
   assetId: string;
   startTime: string;
   endTime: string;
-  severity?: string;
-  maxSpeedMph?: number;
-  speedLimitMph?: number;
+  severityLevel?: string; // 'light' | 'moderate' | 'severe'
+  maxSpeedMph?: number; // Converted from maxSpeedKilometersPerHour
+  speedLimitMph?: number; // Converted from postedSpeedLimitKilometersPerHour
   driverId?: string;
   // Additional fields that may be present
   [key: string]: any;
@@ -60,15 +63,42 @@ async function getAssetIds(): Promise<string[]> {
 }
 
 /**
+ * Convert kilometers per hour to miles per hour.
+ */
+function kmhToMph(kmh: number | null | undefined): number | undefined {
+  if (kmh == null) return undefined;
+  return Math.round((kmh * 0.621371) * 10) / 10; // Round to 1 decimal
+}
+
+/**
  * Fetch speeding intervals from Samsara API.
  * 
  * Endpoint: GET https://api.samsara.com/speeding-intervals/stream
  * 
+ * Response structure:
+ * {
+ *   data: [
+ *     {
+ *       asset: { id },
+ *       intervals: [
+ *         {
+ *           severityLevel: "light|moderate|severe",
+ *           startTime,
+ *           endTime,
+ *           postedSpeedLimitKilometersPerHour,
+ *           maxSpeedKilometersPerHour,
+ *           ...
+ *         }
+ *       ]
+ *     }
+ *   ]
+ * }
+ * 
  * Handles pagination/streaming as required by Samsara.
- * Filters for Severe Speeding (severity === 'SEVERE' or 'severe').
+ * Filters for Severe Speeding (severityLevel === 'severe').
  * 
  * @param opts - Options with time window and optional asset IDs
- * @returns Array of speeding intervals (only SEVERE ones)
+ * @returns Array of speeding intervals (only SEVERE ones, with assetId attached)
  */
 export async function fetchSpeedingIntervals(
   opts: { from: Date; to: Date; assetIds?: string[] }
@@ -91,7 +121,8 @@ export async function fetchSpeedingIntervals(
     return [];
   }
 
-  const allIntervals: SpeedingInterval[] = [];
+  const allFlattenedIntervals: SpeedingInterval[] = [];
+  const severeIntervals: SpeedingInterval[] = [];
   let cursor: string | undefined = undefined;
   let hasMore = true;
   let pageCount = 0;
@@ -121,42 +152,113 @@ export async function fetchSpeedingIntervals(
         }
       );
 
-      const data = res.data?.data || res.data || [];
-      const intervals: SpeedingInterval[] = Array.isArray(data) ? data : [];
+      // Parse response: data is an array of { asset: { id }, intervals: [...] }
+      const dataArray = res.data?.data || [];
+      if (!Array.isArray(dataArray)) {
+        console.warn('[SAMSARA] Unexpected response structure, data is not an array');
+        console.warn('[SAMSARA] Response keys:', Object.keys(res.data || {}));
+        break;
+      }
 
-      // Filter for SEVERE severity (case-insensitive)
-      const severeIntervals = intervals.filter((interval) => {
-        const severity = (interval.severity || '').toUpperCase();
-        return severity === 'SEVERE';
-      });
+      if (dataArray.length === 0 && pageCount === 0) {
+        console.log('[SAMSARA] No data records returned from API');
+      }
 
-      allIntervals.push(...severeIntervals);
+      // Flatten: extract intervals from each data item and attach assetId
+      let recordsCount = 0;
+      let intervalsCount = 0;
+      let severeCountThisPage = 0;
+      
+      for (const dataItem of dataArray) {
+        recordsCount++;
+        const assetId = dataItem?.asset?.id;
+        const intervals = dataItem?.intervals || [];
+        
+        if (!assetId) {
+          console.warn('[SAMSARA] Missing asset.id in data item');
+          continue;
+        }
+
+        if (!Array.isArray(intervals)) {
+          continue;
+        }
+
+        for (const interval of intervals) {
+          intervalsCount++;
+          
+          // Convert speeds from km/h to mph
+          const maxSpeedMph = kmhToMph(interval.maxSpeedKilometersPerHour);
+          const speedLimitMph = kmhToMph(interval.postedSpeedLimitKilometersPerHour);
+
+          // Create flattened interval with assetId attached
+          const flattenedInterval: SpeedingInterval = {
+            assetId,
+            startTime: interval.startTime,
+            endTime: interval.endTime,
+            severityLevel: interval.severityLevel,
+            maxSpeedMph,
+            speedLimitMph,
+            driverId: interval.driverId,
+            // Include all other fields
+            ...Object.fromEntries(
+              Object.entries(interval).filter(
+                ([key]) =>
+                  ![
+                    'startTime',
+                    'endTime',
+                    'severityLevel',
+                    'maxSpeedKilometersPerHour',
+                    'postedSpeedLimitKilometersPerHour',
+                    'driverId',
+                  ].includes(key)
+              )
+            ),
+          };
+
+          allFlattenedIntervals.push(flattenedInterval);
+
+          // Filter for severe (severityLevel === 'severe', case-insensitive)
+          const severityLevel = (interval.severityLevel || '').toLowerCase().trim();
+          if (severityLevel === 'severe') {
+            severeIntervals.push(flattenedInterval);
+            severeCountThisPage++;
+          }
+        }
+      }
+
+      // Log debug info per page
+      console.log(
+        `[SAMSARA] Page ${pageCount + 1}: ${recordsCount} records, ${intervalsCount} intervals (${severeCountThisPage} severe this page)`
+      );
 
       // Check for pagination
       cursor = res.data?.pagination?.nextCursor;
-      hasMore = !!cursor && intervals.length > 0;
+      hasMore = !!cursor && intervalsCount > 0;
 
       pageCount++;
-
-      // Log progress
-      if (pageCount === 1) {
-        console.log(
-          `[SAMSARA] Fetched ${intervals.length} speeding intervals (${severeIntervals.length} severe) from page ${pageCount}`
-        );
-      }
     }
 
+    // Final debug logs
     console.log(
-      `[SAMSARA] Total speeding intervals fetched: ${allIntervals.length} (severe only) across ${pageCount} page(s)`
+      `[SAMSARA] Total: ${allFlattenedIntervals.length} intervals (all), ${severeIntervals.length} severe, across ${pageCount} page(s)`
+    );
+    console.log(
+      `[SAMSARA] Asset IDs queried: ${assetIds.join(', ')}`
     );
 
-    if (allIntervals.length === 0 && assetIds.length > 0) {
+    if (severeIntervals.length === 0 && assetIds.length > 0) {
       console.log(
-        `[SAMSARA] No severe speeding intervals found. Asset IDs used: ${assetIds.join(', ')}`
+        `[SAMSARA] No severe speeding intervals found. Check asset IDs match Samsara asset IDs.`
+      );
+    } else if (severeIntervals.length > 0) {
+      // Log sample severe interval for debugging
+      const sample = severeIntervals[0];
+      console.log(
+        `[SAMSARA] Sample severe interval: assetId=${sample.assetId}, startTime=${sample.startTime}, severityLevel=${sample.severityLevel}`
       );
     }
 
-    return allIntervals;
+    return severeIntervals;
   } catch (err: any) {
     console.error(
       '❌ Error fetching speeding intervals:',
