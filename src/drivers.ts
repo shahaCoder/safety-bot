@@ -11,21 +11,21 @@ export interface DriverConfig {
 export const drivers: DriverConfig[] = [
   {
     id: 1,
-    name: 'PTI TEST RU',
+    name: 'PTI TEST UZ',
     chatId: -1003477748349,      // пример: твой RU test chat id
     language: 'uz',
     trucks: ['Truck 105'],       // какие траки относятся к этой группе
   },
   {
     id: 2,
-    name: 'PTI TEST EN',
+    name: 'PTI TEST UZ',
     chatId: -1003246951032,      // EN test chat id
     language: 'uz',
     trucks: ['Truck 712'],
   },
   {
     id: 3,
-    name: 'PTI TEST UZ',
+    name: 'PTI TEST RU',
     chatId: -1003474651531,      // UZ test chat id
     language: 'ru',
     trucks: ['Truck 10'],
@@ -55,7 +55,7 @@ export const drivers: DriverConfig[] = [
     id: 7,
     name: 'PTI TEST UZ',
     chatId: -1003474651531,      // UZ test chat id
-    language: 'uz',
+    language: 'en',
     trucks: ['Truck 195'],
   },
   {
@@ -109,16 +109,16 @@ export const drivers: DriverConfig[] = [
   },
   {
     id: 15,
-    name: 'PTI TEST UZ',
+    name: 'PTI TEST EN',
     chatId: -4285641809,      // UZ test chat id
-    language: 'uz',
+    language: 'en',
     trucks: ['Truck 717'],
   },
   {
     id: 16,
-    name: 'PTI TEST UZ',
+    name: 'PTI TEST EN',
     chatId: -1003449100289,      // UZ test chat id
-    language: 'uz',
+    language: 'en',
     trucks: ['Truck 6974'],
   },
   {
@@ -144,9 +144,9 @@ export const drivers: DriverConfig[] = [
   },
   {
     id: 20,
-    name: 'PTI TEST UZ',
+    name: 'PTI TEST RU',
     chatId: -1003474651531,      // UZ test chat id
-    language: 'uz',
+    language: 'ru',
     trucks: ['Truck 715'],
   },
   {
