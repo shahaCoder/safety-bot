@@ -172,6 +172,13 @@ interface DriverSeedData {
       chatId: -1003372385236,
       language: 'uz',
       trucks: ['Truck 1982'],
+    },
+    {
+      id: 24,
+      name: 'PTI TEST EN',
+      chatId: -1003342138533,
+      language: 'en',
+      trucks: ['Truck 713'],
     }
   ];
 
