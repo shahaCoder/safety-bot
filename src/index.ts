@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { Telegraf } from 'telegraf';
 import dotenv from 'dotenv';
 import cron from 'node-cron';
