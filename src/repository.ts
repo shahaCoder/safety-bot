@@ -351,6 +351,63 @@ export async function clearChatDriver(
   }
 }
 
+/**
+ * Check if an event has already been sent (deduplication).
+ * 
+ * @param eventId - Stable event ID (e.g., "speeding:assetId:startTime:endTime")
+ * @returns true if event was already sent
+ */
+export async function isEventSent(eventId: string): Promise<boolean> {
+  try {
+    const existing = await prisma.sentEvent.findUnique({
+      where: {
+        id: eventId,
+      },
+      select: {
+        id: true,
+      },
+    });
+    return existing !== null;
+  } catch (error) {
+    console.error(
+      `❌ Error checking if event ${eventId} was sent:`,
+      error
+    );
+    return false; // If error, assume not sent to avoid skipping events
+  }
+}
+
+/**
+ * Mark an event as sent (deduplication).
+ * 
+ * @param eventId - Stable event ID
+ * @param eventType - Event type (e.g., "severe_speeding")
+ */
+export async function markEventSent(
+  eventId: string,
+  eventType: string
+): Promise<void> {
+  try {
+    await prisma.sentEvent.upsert({
+      where: {
+        id: eventId,
+      },
+      update: {
+        type: eventType,
+        sentAt: new Date(),
+      },
+      create: {
+        id: eventId,
+        type: eventType,
+        sentAt: new Date(),
+      },
+    });
+  } catch (error) {
+    console.error(`❌ Error marking event ${eventId} as sent:`, error);
+    // Don't throw - marking errors shouldn't break the bot
+  }
+}
+
 // Export Prisma client for direct use if needed
 export { prisma };
 

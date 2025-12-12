@@ -25,6 +25,8 @@ import {
   logSafetyEvent,
   logUnifiedEvent,
   isEventProcessed,
+  isEventSent,
+  markEventSent,
   getAllChats,
   findChatByTelegramChatId,
   updateChatMentionTemplate,
@@ -34,6 +36,7 @@ import {
 import { requireAdminPrivateChat } from './guards/isAdmin';
 import { handleDebugSafety } from './commands/debugSafety';
 import { fetchSpeedingIntervals } from './services/samsaraSpeeding';
+import { getAllVehicleAssetIds, getVehicleNameById } from './services/samsaraVehicles';
 import {
   normalizeSafetyEvents,
   normalizeSpeedingIntervals,
@@ -435,6 +438,62 @@ https://www.google.com/maps?q=${lat},${lon}`;
   }
 
   return caption;
+}
+
+/**
+ * Format severe speeding message (plain text, no Markdown).
+ * 
+ * @param event - UnifiedEvent of type severe_speeding
+ * @param vehicleName - Vehicle name (from mapping or assetId)
+ * @returns Plain text message
+ */
+function formatSevereSpeedingMessage(
+  event: UnifiedEvent,
+  vehicleName: string
+): string {
+  const maxSpeedMph = event.details?.maxSpeedMph ?? 0;
+  const speedLimitMph = event.details?.speedLimitMph ?? 0;
+  const deltaMph = maxSpeedMph - speedLimitMph;
+  const deltaSign = deltaMph >= 0 ? '+' : '';
+
+  // Calculate duration
+  let durationStr = 'N/A';
+  if (event.occurredAt && event.endedAt) {
+    const start = new Date(event.occurredAt);
+    const end = new Date(event.endedAt);
+    const durationMs = end.getTime() - start.getTime();
+    const minutes = Math.floor(durationMs / 60000);
+    const seconds = Math.floor((durationMs % 60000) / 1000);
+    durationStr = `${minutes}m ${seconds}s`;
+  }
+
+  // Format time (America/New_York)
+  const timeLocal = formatLocalTime(event.occurredAt);
+  const date = new Date(event.occurredAt);
+  const timeStr = date.toLocaleString('en-US', {
+    timeZone: 'America/New_York',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }) + ' ET';
+
+  // Get location
+  const location = event.details?.location?.address || null;
+
+  // Build message (plain text, no Markdown)
+  let message = `🚨 SEVERE SPEEDING\n`;
+  message += `Truck: ${vehicleName}\n`;
+  message += `${maxSpeedMph.toFixed(1)} mph in ${speedLimitMph.toFixed(1)} mph (${deltaSign}${deltaMph.toFixed(1)})\n`;
+  message += `Duration: ${durationStr}\n`;
+  message += `Time: ${timeStr}`;
+
+  if (location) {
+    message += `\nLocation: ${location}`;
+  }
+
+  return message;
 }
 
 /**
@@ -846,19 +905,34 @@ async function checkAndNotifySafetyEvents() {
 
   // Process each relevant event
   for (const event of relevant) {
-    // Check if already processed using database
+    // Check deduplication: skip if already sent
+    const alreadySent = await isEventSent(event.id);
+    if (alreadySent) {
+      console.log(`↩️ Skipping ${event.id} — already sent`);
+      continue;
+    }
+
+    // Also check if already processed (for safety events)
     const alreadyProcessed = await isEventProcessed(event.id);
-    if (alreadyProcessed) {
+    if (alreadyProcessed && event.source === 'safety') {
       console.log(`↩️ Skipping ${event.id} — already processed`);
       continue;
     }
 
-    // Get vehicle name (from vehicleName field or assetId lookup)
-    const vehicleName = event.vehicleName || event.assetId || null;
+    // Get vehicle name: try vehicleName field, then assetId lookup, then assetId as fallback
+    let vehicleName = event.vehicleName;
+    if (!vehicleName && event.assetId) {
+      vehicleName = getVehicleNameById(event.assetId) || event.assetId;
+    }
+    if (!vehicleName) {
+      vehicleName = 'Unknown';
+    }
+
+    // Find chat by vehicle name
     const chat = await findChatByVehicleName(vehicleName);
 
     if (!chat) {
-      console.log(`❓ No chat mapping for vehicle ${vehicleName || event.assetId || 'Unknown'}`);
+      console.log(`❓ No chat mapping for vehicle ${vehicleName}`);
       // Log event even if no chat found (sentToChatId will be null)
       const behavior =
         event.type === 'severe_speeding'
@@ -872,7 +946,6 @@ async function checkAndNotifySafetyEvents() {
     }
 
     const chatId = Number(chat.telegramChatId);
-    const caption = formatUnifiedEventCaption(event);
 
     // Build driver mention if driver is set
     const chatWithDriver = chat as Chat & {
@@ -887,9 +960,6 @@ async function checkAndNotifySafetyEvents() {
       mentionText = `[Driver](tg://user?id=${chatWithDriver.driverTgUserId})`;
     }
 
-    // Build final caption with driver mention
-    const finalCaption = mentionText ? `${mentionText}\n\n${caption}` : caption;
-
     // Build behavior string for logging
     const behavior =
       event.type === 'severe_speeding'
@@ -901,10 +971,27 @@ async function checkAndNotifySafetyEvents() {
     // Convert time to Date object for database
     const timeLocal = convertToNewYorkTime(event.occurredAt);
 
-    // Send message (unified events may not have video, especially speeding intervals)
+    // Send message based on event type
     try {
-      if (event.videoUrl) {
-        // Has video, use sendVideo
+      if (event.type === 'severe_speeding') {
+        // Severe speeding: use plain text format (no Markdown)
+        const message = formatSevereSpeedingMessage(event, vehicleName);
+        const finalMessage = mentionText ? `${mentionText}\n\n${message}` : message;
+
+        await bot.telegram.sendMessage(chatId, finalMessage, {
+          parse_mode: undefined, // Plain text
+        });
+        console.log(
+          `✅ Sent severe speeding event ${event.id} to ${chat.name} (chatId=${chatId})`
+        );
+
+        // Mark as sent (dedup)
+        await markEventSent(event.id, event.type);
+      } else if (event.videoUrl) {
+        // Safety event with video
+        const caption = formatUnifiedEventCaption(event);
+        const finalCaption = mentionText ? `${mentionText}\n\n${caption}` : caption;
+
         await bot.telegram.sendVideo(chatId, event.videoUrl, {
           caption: finalCaption,
           parse_mode: 'Markdown',
@@ -913,7 +1000,10 @@ async function checkAndNotifySafetyEvents() {
           `✅ Sent event ${event.id} with video to ${chat.name} (chatId=${chatId})`
         );
       } else {
-        // No video, send text only
+        // Safety event without video
+        const caption = formatUnifiedEventCaption(event);
+        const finalCaption = mentionText ? `${mentionText}\n\n${caption}` : caption;
+
         await bot.telegram.sendMessage(chatId, finalCaption, {
           parse_mode: 'Markdown',
         });

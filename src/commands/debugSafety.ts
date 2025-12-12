@@ -1,6 +1,7 @@
 import { Context } from 'telegraf';
 import { getSafetyEventsInWindow, SafetyEvent } from '../samsara';
 import { fetchSpeedingIntervals, SpeedingInterval } from '../services/samsaraSpeeding';
+import { getAllVehicleAssetIds } from '../services/samsaraVehicles';
 import {
   normalizeSafetyEvents,
   normalizeSpeedingIntervals,
@@ -195,7 +196,7 @@ function formatExampleSpeedingInterval(interval: SpeedingInterval): string {
   lines.push(`Asset ID: ${interval.assetId}`);
   lines.push(`Start Time: ${new Date(interval.startTime).toISOString()}`);
   lines.push(`End Time: ${new Date(interval.endTime).toISOString()}`);
-  lines.push(`Severity: ${interval.severity || 'N/A'}`);
+  lines.push(`Severity: ${interval.severityLevel?.toUpperCase() || 'SEVERE'}`); // Show SEVERE, not N/A
   lines.push(
     `Max Speed: ${interval.maxSpeedMph != null ? `${interval.maxSpeedMph} mph` : 'N/A'}`
   );
@@ -236,6 +237,11 @@ export async function handleDebugSafety(ctx: Context): Promise<void> {
   const now = new Date();
   const from = new Date(now.getTime() - hours * 60 * 60 * 1000);
 
+  // Get vehicle count and mode
+  const vehicleAssetIds = await getAllVehicleAssetIds();
+  const useEnvOverride = !!process.env.SAMSARA_ASSET_IDS;
+  const mode = useEnvOverride ? 'env override' : 'auto-fetched';
+
   // Fetch both safety events and speeding intervals (DO NOT write to DB, DO NOT send to groups)
   const [safetyEvents, speedingResult] = await Promise.all([
     getSafetyEventsInWindow({ from, to: now }, 200),
@@ -273,6 +279,7 @@ export async function handleDebugSafety(ctx: Context): Promise<void> {
   responseLines.push(`📊 Safety Events Diagnostics`);
   responseLines.push(`Time Window: Last ${hours} hours`);
   responseLines.push('');
+  responseLines.push(`Vehicles count: ${vehicleAssetIds.length} (mode: ${mode})`);
   responseLines.push(`Safety Events (raw): ${totalSafetyEvents}`);
   responseLines.push(`Safety Events (normalized): ${normalizedSafety.length}`);
   responseLines.push(`Speeding intervals (total): ${totalSpeedingIntervals}`);

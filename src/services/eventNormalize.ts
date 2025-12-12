@@ -76,8 +76,8 @@ export function normalizeSpeedingInterval(
   // Create stable dedup key: speeding:<assetId>:<startTime>:<endTime>
   const id = `speeding:${interval.assetId}:${interval.startTime}:${interval.endTime}`;
 
-  // severityLevel is 'severe' (lowercase), but we store as 'SEVERE' in UnifiedEvent
-  const severity = (interval.severityLevel || 'severe').toUpperCase();
+  // Extract location address if present
+  const locationAddress = (interval as any).location?.address || null;
 
   return {
     source: 'speeding',
@@ -85,13 +85,16 @@ export function normalizeSpeedingInterval(
     type: 'severe_speeding',
     occurredAt: interval.startTime,
     endedAt: interval.endTime,
-    severity: 'SEVERE', // Always SEVERE since we filter for severe only
+    severity: 'SEVERE', // Set explicitly as SEVERE
     assetId: interval.assetId,
     driverId: interval.driverId,
     details: {
       maxSpeedMph: interval.maxSpeedMph,
       speedLimitMph: interval.speedLimitMph,
+      postedSpeedLimitKilometersPerHour: (interval as any).postedSpeedLimitKilometersPerHour,
+      maxSpeedKilometersPerHour: (interval as any).maxSpeedKilometersPerHour,
       severityLevel: interval.severityLevel, // Keep original for reference
+      location: locationAddress ? { address: locationAddress } : undefined,
       // Include any other fields from interval
       ...Object.fromEntries(
         Object.entries(interval).filter(
@@ -104,6 +107,7 @@ export function normalizeSpeedingInterval(
               'maxSpeedMph',
               'speedLimitMph',
               'driverId',
+              'location',
             ].includes(key)
         )
       ),
