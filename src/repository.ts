@@ -117,7 +117,7 @@ export async function isEventProcessed(
 /**
  * Get all Chats from database for PTI reminders.
  *
- * @returns Array of all Chats with their language settings
+ * @returns Array of all Chats with their language settings and mentionTemplate
  */
 export async function getAllChats(): Promise<Chat[]> {
   try {
@@ -129,6 +129,171 @@ export async function getAllChats(): Promise<Chat[]> {
   } catch (error) {
     console.error('❌ Error fetching all chats:', error);
     return [];
+  }
+}
+
+/**
+ * Find Chat by Telegram chat ID.
+ *
+ * @param telegramChatId - Telegram chat ID (BigInt)
+ * @returns Chat or null if not found
+ */
+export async function findChatByTelegramChatId(
+  telegramChatId: bigint
+): Promise<Chat | null> {
+  try {
+    return await prisma.chat.findUnique({
+      where: {
+        telegramChatId,
+      },
+    });
+  } catch (error) {
+    console.error(
+      `❌ Error finding chat by telegramChatId ${telegramChatId}:`,
+      error
+    );
+    return null;
+  }
+}
+
+/**
+ * Update mention template for a chat.
+ *
+ * @param telegramChatId - Telegram chat ID (BigInt)
+ * @param mentionTemplate - Mention template string (can be null to clear)
+ * @returns Updated Chat or null if not found
+ */
+export async function updateChatMentionTemplate(
+  telegramChatId: bigint,
+  mentionTemplate: string | null
+): Promise<Chat | null> {
+  try {
+    // First check if chat exists
+    const existing = await prisma.chat.findUnique({
+      where: {
+        telegramChatId,
+      },
+    });
+
+    if (!existing) {
+      console.log(
+        `⚠️ Chat not found for telegramChatId ${telegramChatId}, cannot update mentionTemplate`
+      );
+      return null;
+    }
+
+    // Update the chat
+    return await prisma.chat.update({
+      where: {
+        telegramChatId,
+      },
+      data: {
+        mentionTemplate,
+      },
+    });
+  } catch (error) {
+    console.error(
+      `❌ Error updating mention template for chat ${telegramChatId}:`,
+      error
+    );
+    return null;
+  }
+}
+
+/**
+ * Set driver information for a chat.
+ *
+ * @param telegramChatId - Telegram chat ID (BigInt)
+ * @param user - Driver user information from Telegram
+ * @returns Updated Chat or null if not found
+ */
+export async function setChatDriver(
+  telegramChatId: bigint,
+  user: {
+    id: bigint;
+    firstName?: string | null;
+    lastName?: string | null;
+    username?: string | null;
+  }
+): Promise<Chat | null> {
+  try {
+    // First check if chat exists
+    const existing = await prisma.chat.findUnique({
+      where: {
+        telegramChatId,
+      },
+    });
+
+    if (!existing) {
+      console.log(
+        `⚠️ Chat not found for telegramChatId ${telegramChatId}, cannot set driver`
+      );
+      return null;
+    }
+
+    // Update the chat with driver information
+    return await prisma.chat.update({
+      where: {
+        telegramChatId,
+      },
+      data: {
+        driverTgUserId: user.id,
+        driverFirstName: user.firstName ?? null,
+        driverLastName: user.lastName ?? null,
+        driverUsername: user.username ?? null,
+      },
+    });
+  } catch (error) {
+    console.error(
+      `❌ Error setting driver for chat ${telegramChatId}:`,
+      error
+    );
+    return null;
+  }
+}
+
+/**
+ * Clear driver information for a chat.
+ *
+ * @param telegramChatId - Telegram chat ID (BigInt)
+ * @returns Updated Chat or null if not found
+ */
+export async function clearChatDriver(
+  telegramChatId: bigint
+): Promise<Chat | null> {
+  try {
+    // First check if chat exists
+    const existing = await prisma.chat.findUnique({
+      where: {
+        telegramChatId,
+      },
+    });
+
+    if (!existing) {
+      console.log(
+        `⚠️ Chat not found for telegramChatId ${telegramChatId}, cannot clear driver`
+      );
+      return null;
+    }
+
+    // Clear driver fields
+    return await prisma.chat.update({
+      where: {
+        telegramChatId,
+      },
+      data: {
+        driverTgUserId: null,
+        driverFirstName: null,
+        driverLastName: null,
+        driverUsername: null,
+      },
+    });
+  } catch (error) {
+    console.error(
+      `❌ Error clearing driver for chat ${telegramChatId}:`,
+      error
+    );
+    return null;
   }
 }
 

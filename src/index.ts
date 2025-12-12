@@ -1,6 +1,7 @@
 import { Telegraf } from 'telegraf';
 import dotenv from 'dotenv';
 import cron from 'node-cron';
+import { Chat } from '@prisma/client';
 
 import { ptiMessages } from './messages';
 import { getRecentSafetyEvents, SafetyEvent } from './samsara';
@@ -9,6 +10,10 @@ import {
   logSafetyEvent,
   isEventProcessed,
   getAllChats,
+  findChatByTelegramChatId,
+  updateChatMentionTemplate,
+  setChatDriver,
+  clearChatDriver,
 } from './repository';
 
 dotenv.config();
@@ -54,6 +59,261 @@ bot.command('id', (ctx) => {
 bot.command('pti_en', (ctx) => ctx.reply(ptiMessages.en));
 bot.command('pti_ru', (ctx) => ctx.reply(ptiMessages.ru));
 bot.command('pti_uz', (ctx) => ctx.reply(ptiMessages.uz));
+
+// ================== MENTION TEMPLATE COMMANDS ==================
+
+bot.command('setmention', async (ctx) => {
+  // Only work in groups/supergroups, ignore private chats
+  if (ctx.chat?.type === 'private') {
+    return; // Silently ignore
+  }
+
+  const chatId = ctx.chat?.id;
+  if (!chatId) {
+    return;
+  }
+
+  // Get the mention text from command arguments
+  const mentionText = ctx.message.text
+    .replace(/^\/setmention\s*/, '')
+    .trim();
+
+  if (!mentionText) {
+    await ctx.reply(
+      '❌ Please provide mention text. Example: /setmention @driver712'
+    );
+    return;
+  }
+
+  try {
+    const telegramChatId = BigInt(chatId);
+    const updatedChat = await updateChatMentionTemplate(
+      telegramChatId,
+      mentionText
+    );
+
+    if (!updatedChat) {
+      await ctx.reply(
+        '❌ Chat not found in database. Please ensure this chat is registered.'
+      );
+      return;
+    }
+
+    await ctx.reply('✅ Mention template saved for this chat.');
+  } catch (err) {
+    console.error('❌ Error setting mention template:', err);
+    await ctx.reply('❌ Failed to save mention template.');
+  }
+});
+
+bot.command('getmention', async (ctx) => {
+  // Only work in groups/supergroups, ignore private chats
+  if (ctx.chat?.type === 'private') {
+    return; // Silently ignore
+  }
+
+  const chatId = ctx.chat?.id;
+  if (!chatId) {
+    return;
+  }
+
+  try {
+    const telegramChatId = BigInt(chatId);
+    const chat: Chat | null = await findChatByTelegramChatId(telegramChatId);
+
+    if (!chat) {
+      await ctx.reply('❌ Chat not found in database.');
+      return;
+    }
+
+    // Access mentionTemplate - Prisma includes this field after schema update
+    const chatWithMention = chat as Chat & { mentionTemplate?: string | null };
+    const mentionTemplate = chatWithMention.mentionTemplate;
+    if (mentionTemplate) {
+      await ctx.reply(`Current mention template:\n${mentionTemplate}`);
+    } else {
+      await ctx.reply('No mention template set for this chat.');
+    }
+  } catch (err) {
+    console.error('❌ Error getting mention template:', err);
+    await ctx.reply('❌ Failed to get mention template.');
+  }
+});
+
+// ================== DRIVER MANAGEMENT COMMANDS ==================
+
+/**
+ * Helper function to check if user is admin (optional - commented out by default)
+ * To enable admin-only commands, uncomment and use this function
+ */
+async function isUserAdmin(
+  chatId: number,
+  userId: number
+): Promise<boolean> {
+  try {
+    const admins = await bot.telegram.getChatAdministrators(chatId);
+    return admins.some(
+      (admin) =>
+        admin.user.id === userId &&
+        (admin.status === 'administrator' || admin.status === 'creator')
+    );
+  } catch (err) {
+    console.error('❌ Error checking admin status:', err);
+    return false; // On error, allow command (fail open)
+  }
+}
+
+bot.command('setdriver', async (ctx) => {
+  // Only work in groups/supergroups, ignore private chats
+  if (ctx.chat?.type === 'private') {
+    return; // Silently ignore
+  }
+
+  const chatId = ctx.chat?.id;
+  if (!chatId) {
+    return;
+  }
+
+  // Optional: Uncomment to restrict to admins only
+  // const userId = ctx.from?.id;
+  // if (!userId || !(await isUserAdmin(chatId, userId))) {
+  //   await ctx.reply('❌ Only administrators can use this command.');
+  //   return;
+  // }
+
+  // Must be used as a reply to a message
+  const repliedMessage = ctx.message.reply_to_message;
+  if (!repliedMessage || !repliedMessage.from) {
+    await ctx.reply(
+      "❌ Reply to the driver's message and type /setdriver"
+    );
+    return;
+  }
+
+  const targetUser = repliedMessage.from;
+
+  try {
+    const telegramChatId = BigInt(chatId);
+    const userData = {
+      id: BigInt(targetUser.id),
+      firstName: targetUser.first_name ?? null,
+      lastName: targetUser.last_name ?? null,
+      username: targetUser.username ?? null,
+    };
+
+    console.log(
+      `🔧 Setting driver for chat ${chatId}: ${userData.firstName} ${userData.lastName || ''} (@${userData.username || 'no username'})`
+    );
+
+    const updatedChat = await setChatDriver(telegramChatId, userData);
+
+    if (!updatedChat) {
+      await ctx.reply(
+        '❌ This chat is not registered in DB. Add chat first.'
+      );
+      return;
+    }
+
+    const driverName = `${userData.firstName || ''} ${userData.lastName || ''}`.trim() || 'Driver';
+    const usernameDisplay = userData.username
+      ? `@${userData.username}`
+      : 'no username';
+
+    await ctx.reply(
+      `✅ Driver set for this group: ${driverName} (${usernameDisplay})`
+    );
+  } catch (err) {
+    console.error('❌ Error setting driver:', err);
+    await ctx.reply('❌ Failed to set driver.');
+  }
+});
+
+bot.command('getdriver', async (ctx) => {
+  // Only work in groups/supergroups, ignore private chats
+  if (ctx.chat?.type === 'private') {
+    return; // Silently ignore
+  }
+
+  const chatId = ctx.chat?.id;
+  if (!chatId) {
+    return;
+  }
+
+  try {
+    const telegramChatId = BigInt(chatId);
+    const chat = await findChatByTelegramChatId(telegramChatId);
+
+    if (!chat) {
+      await ctx.reply('❌ Chat not found in database.');
+      return;
+    }
+
+    const chatWithDriver = chat as Chat & {
+      driverTgUserId?: bigint | null;
+      driverFirstName?: string | null;
+      driverLastName?: string | null;
+      driverUsername?: string | null;
+    };
+
+    if (chatWithDriver.driverTgUserId) {
+      const firstName = chatWithDriver.driverFirstName || '';
+      const lastName = chatWithDriver.driverLastName || '';
+      const fullName = `${firstName} ${lastName}`.trim() || 'Driver';
+      const username = chatWithDriver.driverUsername
+        ? `@${chatWithDriver.driverUsername}`
+        : '';
+      const usernamePart = username ? ` ${username}` : '';
+
+      await ctx.reply(
+        `Current driver: ${fullName}${usernamePart} (id: ${chatWithDriver.driverTgUserId})`
+      );
+    } else {
+      await ctx.reply(
+        'No driver set for this group. Reply to the driver message and run /setdriver'
+      );
+    }
+  } catch (err) {
+    console.error('❌ Error getting driver:', err);
+    await ctx.reply('❌ Failed to get driver information.');
+  }
+});
+
+bot.command('cleardriver', async (ctx) => {
+  // Only work in groups/supergroups, ignore private chats
+  if (ctx.chat?.type === 'private') {
+    return; // Silently ignore
+  }
+
+  const chatId = ctx.chat?.id;
+  if (!chatId) {
+    return;
+  }
+
+  // Optional: Uncomment to restrict to admins only
+  // const userId = ctx.from?.id;
+  // if (!userId || !(await isUserAdmin(chatId, userId))) {
+  //   await ctx.reply('❌ Only administrators can use this command.');
+  //   return;
+  // }
+
+  try {
+    const telegramChatId = BigInt(chatId);
+
+    console.log(`🔧 Clearing driver for chat ${chatId}`);
+
+    const updatedChat = await clearChatDriver(telegramChatId);
+
+    if (!updatedChat) {
+      await ctx.reply('❌ Chat not found in database.');
+      return;
+    }
+
+    await ctx.reply('✅ Driver cleared for this group.');
+  } catch (err) {
+    console.error('❌ Error clearing driver:', err);
+    await ctx.reply('❌ Failed to clear driver.');
+  }
+});
 
 // ================== ФИЛЬТР SAFETY-СОБЫТИЙ ==================
 //
@@ -243,6 +503,26 @@ async function checkAndNotifySafetyEvents() {
     const chatId = Number(chat.telegramChatId);
     const { caption, videoUrl } = buildSafetyPayload(ev);
 
+    // Build driver mention if driver is set
+    const chatWithDriver = chat as Chat & {
+      driverTgUserId?: bigint | null;
+      driverUsername?: string | null;
+    };
+
+    let mentionText = '';
+    if (chatWithDriver.driverUsername) {
+      // Use @username if available
+      mentionText = `@${chatWithDriver.driverUsername}`;
+    } else if (chatWithDriver.driverTgUserId) {
+      // Use Markdown link if only user ID is available
+      mentionText = `[Driver](tg://user?id=${chatWithDriver.driverTgUserId})`;
+    }
+
+    // Build final caption with driver mention
+    const finalCaption = mentionText
+      ? `${mentionText}\n\n${caption}`
+      : caption;
+
     // Build behavior string for logging
     const behavior =
       ev.behaviorLabels?.map((l) => l.name || l.label).join(', ') ??
@@ -254,11 +534,11 @@ async function checkAndNotifySafetyEvents() {
     try {
       if (videoUrl) {
         await bot.telegram.sendVideo(chatId, videoUrl, {
-          caption,
+          caption: finalCaption,
           parse_mode: 'Markdown',
         });
       } else {
-        await bot.telegram.sendMessage(chatId, caption, {
+        await bot.telegram.sendMessage(chatId, finalCaption, {
           parse_mode: 'Markdown',
         });
       }
@@ -333,15 +613,38 @@ async function sendDailyPtiReminders() {
   for (const chat of chats) {
     // Map ChatLanguage enum to LanguageCode (already lowercase)
     const lang = chat.language as LanguageCode;
-    const message =
+    const baseText =
       ptiMessages[lang] ?? ptiMessages.en ?? 'Daily PTI reminder.';
+
+    // Build driver mention if driver is set
+    const chatWithDriver = chat as Chat & {
+      driverTgUserId?: bigint | null;
+      driverUsername?: string | null;
+    };
+
+    let mentionText = '';
+    if (chatWithDriver.driverUsername) {
+      // Use @username if available
+      mentionText = `@${chatWithDriver.driverUsername}`;
+    } else if (chatWithDriver.driverTgUserId) {
+      // Use Markdown link if only user ID is available
+      mentionText = `[Driver](tg://user?id=${chatWithDriver.driverTgUserId})`;
+    }
+
+    // Build final message
+    const finalText = mentionText
+      ? `${mentionText}\n\n${baseText}`
+      : baseText;
 
     const chatId = Number(chat.telegramChatId);
 
     try {
-      await bot.telegram.sendMessage(chatId, message);
+      await bot.telegram.sendMessage(chatId, finalText, {
+        parse_mode: 'Markdown',
+        link_preview_options: { is_disabled: true },
+      });
       console.log(
-        `✅ PTI reminder sent to ${chat.name} (chatId=${chatId}, lang=${chat.language})`,
+        `✅ PTI reminder sent to ${chat.name} (chatId=${chatId}, lang=${chat.language}${mentionText ? ', with driver mention' : ''})`,
       );
     } catch (err) {
       console.error(
@@ -398,3 +701,6 @@ process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
 
+// export const ConstruictionZoneFollowingDistance = () => {
+//   return 'Construction Zone Following Distance';
+// }
