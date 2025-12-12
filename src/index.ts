@@ -801,16 +801,19 @@ async function checkAndNotifySafetyEvents() {
   const from = new Date(now.getTime() - SAFETY_LOOKBACK_MINUTES * 60 * 1000);
 
   // Fetch both safety events and speeding intervals
-  const [safetyEvents, speedingIntervals] = await Promise.all([
+  const [safetyEvents, speedingResult] = await Promise.all([
     getSafetyEventsInWindow({ from, to: now }, 200),
     fetchSpeedingIntervals({ from, to: now }),
   ]);
+
+  const speedingIntervals = speedingResult.severe;
+  const totalSpeedingIntervals = speedingResult.total;
 
   // Log counts per source
   const severeSpeedingCount = speedingIntervals.length;
   console.log(`[SAMSARA] safety events: ${safetyEvents.length}`);
   console.log(
-    `[SAMSARA] speeding intervals: ${speedingIntervals.length} (severe: ${severeSpeedingCount})`
+    `[SAMSARA] speeding intervals: ${totalSpeedingIntervals} (total), ${severeSpeedingCount} (severe)`
   );
 
   // Normalize both into unified events

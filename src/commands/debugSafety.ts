@@ -237,14 +237,17 @@ export async function handleDebugSafety(ctx: Context): Promise<void> {
   const from = new Date(now.getTime() - hours * 60 * 60 * 1000);
 
   // Fetch both safety events and speeding intervals (DO NOT write to DB, DO NOT send to groups)
-  const [safetyEvents, speedingIntervals] = await Promise.all([
+  const [safetyEvents, speedingResult] = await Promise.all([
     getSafetyEventsInWindow({ from, to: now }, 200),
     fetchSpeedingIntervals({ from, to: now }),
   ]);
 
+  const speedingIntervals = speedingResult.severe;
+  const totalSpeedingIntervals = speedingResult.total;
+
   // Log diagnostic info
   console.log(
-    `[DEBUG_SAFETY] Fetched ${safetyEvents.length} safety events and ${speedingIntervals.length} speeding intervals for ${hours} hours`
+    `[DEBUG_SAFETY] Fetched ${safetyEvents.length} safety events and ${totalSpeedingIntervals} speeding intervals (${speedingIntervals.length} severe) for ${hours} hours`
   );
 
   // Normalize both
@@ -259,8 +262,7 @@ export async function handleDebugSafety(ctx: Context): Promise<void> {
 
   // Analyze
   const totalSafetyEvents = safetyEvents.length;
-  const totalSpeedingIntervals = speedingIntervals.length;
-  const severeSpeedingCount = speedingIntervals.length; // All returned are severe
+  const severeSpeedingCount = speedingIntervals.length;
   const topTypes = getTopUnifiedEventTypes(allUnifiedEvents, 5);
   const exampleSevereSpeeding =
     speedingIntervals.length > 0 ? speedingIntervals[0] : null;
@@ -273,8 +275,8 @@ export async function handleDebugSafety(ctx: Context): Promise<void> {
   responseLines.push('');
   responseLines.push(`Safety Events (raw): ${totalSafetyEvents}`);
   responseLines.push(`Safety Events (normalized): ${normalizedSafety.length}`);
-  responseLines.push(`Speeding Intervals: ${totalSpeedingIntervals}`);
-  responseLines.push(`Severe Speeding Count: ${severeSpeedingCount}`);
+  responseLines.push(`Speeding intervals (total): ${totalSpeedingIntervals}`);
+  responseLines.push(`Severe speeding count: ${severeSpeedingCount}`);
   responseLines.push('');
 
   if (topTypes.length > 0) {

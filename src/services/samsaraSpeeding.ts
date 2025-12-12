@@ -98,16 +98,16 @@ function kmhToMph(kmh: number | null | undefined): number | undefined {
  * Filters for Severe Speeding (severityLevel === 'severe').
  * 
  * @param opts - Options with time window and optional asset IDs
- * @returns Array of speeding intervals (only SEVERE ones, with assetId attached)
+ * @returns Object with total intervals count and severe intervals array
  */
 export async function fetchSpeedingIntervals(
   opts: { from: Date; to: Date; assetIds?: string[] }
-): Promise<SpeedingInterval[]> {
+): Promise<{ total: number; severe: SpeedingInterval[] }> {
   const token = process.env.SAM_SARA_API_TOKEN;
 
   if (!token) {
     console.error('❌ SAM_SARA_API_TOKEN is missing in .env');
-    return [];
+    return { total: 0, severe: [] };
   }
 
   // Get asset IDs
@@ -118,7 +118,7 @@ export async function fetchSpeedingIntervals(
 
   if (assetIds.length === 0) {
     console.warn('[SAMSARA] No asset IDs available for speeding intervals fetch');
-    return [];
+    return { total: 0, severe: [] };
   }
 
   const allFlattenedIntervals: SpeedingInterval[] = [];
@@ -128,29 +128,45 @@ export async function fetchSpeedingIntervals(
   let pageCount = 0;
   const maxPages = 100; // Safety limit
 
+  // Track totals across all pages
+  let totalRecordsCount = 0;
+  let totalIntervalsCount = 0;
+  let totalSevereCount = 0;
+
   try {
     while (hasMore && pageCount < maxPages) {
+      // Build params exactly as Insomnia: assetIds as string (comma-separated if multiple)
       const params: Record<string, any> = {
         startTime: opts.from.toISOString(),
         endTime: opts.to.toISOString(),
-        assetIds: assetIds.join(','),
-        limit: 100, // Max per page
+        assetIds: assetIds.length === 1 ? assetIds[0] : assetIds.join(','), // Plain string for single, comma-separated for multiple
       };
 
       if (cursor) {
         params.cursor = cursor;
       }
 
-      const res = await axios.get(
-        'https://api.samsara.com/speeding-intervals/stream',
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/json',
-          },
-          params,
-        }
-      );
+      const url = 'https://api.samsara.com/speeding-intervals/stream';
+      
+      // Log request details (no secrets)
+      console.log(`[SAMSARA] Request URL: ${url}`);
+      console.log(`[SAMSARA] Request params:`, {
+        startTime: params.startTime,
+        endTime: params.endTime,
+        assetIds: params.assetIds,
+        cursor: params.cursor ? 'present' : 'none',
+      });
+
+      const res = await axios.get(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+        params,
+      });
+
+      // Log response status
+      console.log(`[SAMSARA] Response status: ${res.status}`);
 
       // Parse response: data is an array of { asset: { id }, intervals: [...] }
       const dataArray = res.data?.data || [];
@@ -180,6 +196,7 @@ export async function fetchSpeedingIntervals(
         }
 
         if (!Array.isArray(intervals)) {
+          console.warn(`[SAMSARA] intervals is not an array for asset ${assetId}, type: ${typeof intervals}`);
           continue;
         }
 
@@ -192,7 +209,7 @@ export async function fetchSpeedingIntervals(
 
           // Create flattened interval with assetId attached
           const flattenedInterval: SpeedingInterval = {
-            assetId,
+            assetId: String(assetId), // Ensure string
             startTime: interval.startTime,
             endTime: interval.endTime,
             severityLevel: interval.severityLevel,
@@ -226,6 +243,11 @@ export async function fetchSpeedingIntervals(
         }
       }
 
+      // Update totals
+      totalRecordsCount += recordsCount;
+      totalIntervalsCount += intervalsCount;
+      totalSevereCount += severeCountThisPage;
+
       // Log debug info per page
       console.log(
         `[SAMSARA] Page ${pageCount + 1}: ${recordsCount} records, ${intervalsCount} intervals (${severeCountThisPage} severe this page)`
@@ -240,15 +262,19 @@ export async function fetchSpeedingIntervals(
 
     // Final debug logs
     console.log(
-      `[SAMSARA] Total: ${allFlattenedIntervals.length} intervals (all), ${severeIntervals.length} severe, across ${pageCount} page(s)`
+      `[SAMSARA] Final counts: records=${totalRecordsCount}, intervals (total)=${totalIntervalsCount}, severe=${totalSevereCount}, across ${pageCount} page(s)`
     );
     console.log(
       `[SAMSARA] Asset IDs queried: ${assetIds.join(', ')}`
     );
 
-    if (severeIntervals.length === 0 && assetIds.length > 0) {
+    if (allFlattenedIntervals.length === 0 && assetIds.length > 0) {
       console.log(
-        `[SAMSARA] No severe speeding intervals found. Check asset IDs match Samsara asset IDs.`
+        `[SAMSARA] No intervals returned. Check asset IDs match Samsara asset IDs and time window.`
+      );
+    } else if (severeIntervals.length === 0 && allFlattenedIntervals.length > 0) {
+      console.log(
+        `[SAMSARA] Found ${allFlattenedIntervals.length} intervals but none are severe.`
       );
     } else if (severeIntervals.length > 0) {
       // Log sample severe interval for debugging
@@ -258,13 +284,16 @@ export async function fetchSpeedingIntervals(
       );
     }
 
-    return severeIntervals;
+    return {
+      total: allFlattenedIntervals.length,
+      severe: severeIntervals,
+    };
   } catch (err: any) {
     console.error(
       '❌ Error fetching speeding intervals:',
       err.response?.data || err.message
     );
-    return [];
+    return { total: 0, severe: [] };
   }
 }
 
