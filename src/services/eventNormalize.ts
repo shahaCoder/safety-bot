@@ -46,11 +46,17 @@ export function normalizeSafetyEvent(event: SafetyEvent): UnifiedEvent {
     event.time || event.occurredAt || event.startTime || new Date().toISOString();
 
   // Build details object with all relevant fields
+  // IMPORTANT: Preserve all video URL fields in details for fallback access
   const details: Record<string, any> = {
     behaviorLabels: event.behaviorLabels,
     location: event.location,
     maxAccelerationGForce: event.maxAccelerationGForce,
     coachingState: event.coachingState,
+    // Preserve all video URL fields in details for potential fallback
+    downloadForwardVideoUrl: event.downloadForwardVideoUrl,
+    downloadInwardVideoUrl: (event as any).downloadInwardVideoUrl,
+    downloadRearVideoUrl: (event as any).downloadRearVideoUrl,
+    downloadVideoUrl: (event as any).downloadVideoUrl,
   };
 
   return {
