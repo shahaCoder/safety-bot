@@ -1,5 +1,12 @@
 import { Context } from 'telegraf';
 import { getSafetyEventsInWindow, SafetyEvent } from '../samsara';
+import { fetchSpeedingIntervals, SpeedingInterval } from '../services/samsaraSpeeding';
+import {
+  normalizeSafetyEvents,
+  normalizeSpeedingIntervals,
+  mergeAndDedupeEvents,
+  UnifiedEvent,
+} from '../services/eventNormalize';
 
 /**
  * Normalize event type by checking multiple possible fields.
@@ -158,6 +165,50 @@ function formatExampleEvent(event: SafetyEvent): string {
 }
 
 /**
+ * Get top event types from unified events.
+ */
+function getTopUnifiedEventTypes(
+  events: UnifiedEvent[],
+  topN: number = 5
+): Array<{ type: string; count: number }> {
+  const typeCounts = new Map<string, number>();
+
+  for (const event of events) {
+    const type = event.type || 'unknown';
+    const current = typeCounts.get(type) || 0;
+    typeCounts.set(type, current + 1);
+  }
+
+  return Array.from(typeCounts.entries())
+    .map(([type, count]) => ({ type, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, topN);
+}
+
+/**
+ * Format example severe speeding interval for display.
+ */
+function formatExampleSpeedingInterval(interval: SpeedingInterval): string {
+  const lines: string[] = [];
+
+  lines.push(`*ID:* \`speeding:${interval.assetId}:${interval.startTime}:${interval.endTime}\``);
+  lines.push(`*Asset ID:* ${interval.assetId}`);
+  lines.push(`*Start Time:* ${new Date(interval.startTime).toISOString()}`);
+  lines.push(`*End Time:* ${new Date(interval.endTime).toISOString()}`);
+  lines.push(`*Severity:* ${interval.severity || 'N/A'}`);
+  lines.push(
+    `*Max Speed:* ${interval.maxSpeedMph != null ? `${interval.maxSpeedMph} mph` : 'N/A'}`
+  );
+  lines.push(
+    `*Speed Limit:* ${interval.speedLimitMph != null ? `${interval.speedLimitMph} mph` : 'N/A'}`
+  );
+  lines.push(`*Driver ID:* ${interval.driverId || 'N/A'}`);
+  lines.push(`*Video URL:* N/A (speeding intervals typically don't include video)`);
+
+  return lines.join('\n');
+}
+
+/**
  * Debug safety command handler.
  * 
  * Usage: /debug_safety [hours]
@@ -166,10 +217,11 @@ function formatExampleEvent(event: SafetyEvent): string {
  */
 export async function handleDebugSafety(ctx: Context): Promise<void> {
   // Parse hours argument
-  const args = ctx.message && 'text' in ctx.message 
-    ? ctx.message.text.split(/\s+/).slice(1) 
-    : [];
-  
+  const args =
+    ctx.message && 'text' in ctx.message
+      ? ctx.message.text.split(/\s+/).slice(1)
+      : [];
+
   let hours = 10; // Default
   if (args.length > 0) {
     const parsed = parseFloat(args[0]);
@@ -178,67 +230,66 @@ export async function handleDebugSafety(ctx: Context): Promise<void> {
     }
   }
 
-  await ctx.reply(`🔍 Fetching safety events for last ${hours} hours...`);
+  await ctx.reply(`🔍 Fetching events for last ${hours} hours...`);
 
   // Calculate time window
   const now = new Date();
   const from = new Date(now.getTime() - hours * 60 * 60 * 1000);
 
-  // Fetch events (DO NOT write to DB, DO NOT send to groups)
-  const events = await getSafetyEventsInWindow({ from, to: now }, 200);
+  // Fetch both safety events and speeding intervals (DO NOT write to DB, DO NOT send to groups)
+  const [safetyEvents, speedingIntervals] = await Promise.all([
+    getSafetyEventsInWindow({ from, to: now }, 200),
+    fetchSpeedingIntervals({ from, to: now }),
+  ]);
 
-  // Log diagnostic info (temporary console logs)
-  console.log(`[DEBUG_SAFETY] Fetched ${events.length} events for ${hours} hours`);
-  for (const event of events.slice(0, 5)) {
-    // Log raw event type fields and severity
-    console.log(`[DEBUG_SAFETY] Event ${event.id}:`, {
-      type: event.type,
-      eventType: event.eventType,
-      behaviorType: event.behaviorType,
-      severity: event.severity,
-      labels: event.behaviorLabels?.map((l) => ({ label: l.label, name: l.name })),
-      normalized: normalizeEventType(event),
-    });
-  }
+  // Log diagnostic info
+  console.log(
+    `[DEBUG_SAFETY] Fetched ${safetyEvents.length} safety events and ${speedingIntervals.length} speeding intervals for ${hours} hours`
+  );
 
-  // Analyze events
-  const totalEvents = events.length;
-  const topTypes = getTopEventTypes(events, 5);
-  const severeSpeedingEvents = events.filter(isSevereSpeeding);
-  const hasSevereSpeeding = severeSpeedingEvents.length > 0;
-  const exampleEvent = findExampleSevereSpeedingEvent(events) || events[0] || null;
+  // Normalize both
+  const normalizedSafety = normalizeSafetyEvents(safetyEvents);
+  const normalizedSpeeding = normalizeSpeedingIntervals(speedingIntervals);
+
+  // Merge and dedupe
+  const allUnifiedEvents = mergeAndDedupeEvents([
+    ...normalizedSafety,
+    ...normalizedSpeeding,
+  ]);
+
+  // Analyze
+  const totalSafetyEvents = safetyEvents.length;
+  const totalSpeedingIntervals = speedingIntervals.length;
+  const severeSpeedingCount = speedingIntervals.length; // All returned are severe
+  const topTypes = getTopUnifiedEventTypes(allUnifiedEvents, 5);
+  const exampleSevereSpeeding =
+    speedingIntervals.length > 0 ? speedingIntervals[0] : null;
 
   // Build response
   const responseLines: string[] = [];
 
   responseLines.push(`📊 *Safety Events Diagnostics*`);
   responseLines.push(`*Time Window:* Last ${hours} hours`);
-  responseLines.push(`*Total Events:* ${totalEvents}`);
+  responseLines.push('');
+  responseLines.push(`*Safety Events (raw):* ${totalSafetyEvents}`);
+  responseLines.push(`*Safety Events (normalized):* ${normalizedSafety.length}`);
+  responseLines.push(`*Speeding Intervals:* ${totalSpeedingIntervals}`);
+  responseLines.push(`*Severe Speeding Count:* ${severeSpeedingCount}`);
   responseLines.push('');
 
   if (topTypes.length > 0) {
-    responseLines.push(`*Top Event Types:*`);
+    responseLines.push(`*Top Event Types (merged):*`);
     for (const { type, count } of topTypes) {
       responseLines.push(`  • ${type}: ${count}`);
     }
     responseLines.push('');
   }
 
-  responseLines.push(`*Severe Speeding Detection:*`);
-  if (hasSevereSpeeding) {
-    responseLines.push(`  ✅ Found ${severeSpeedingEvents.length} Severe Speeding event(s)`);
-    responseLines.push(`  (Checked: type, eventType, behaviorType, label, name, severity)`);
+  if (exampleSevereSpeeding) {
+    responseLines.push(`*Example Severe Speeding Interval:*`);
+    responseLines.push(formatExampleSpeedingInterval(exampleSevereSpeeding));
   } else {
-    responseLines.push(`  ❌ No Severe Speeding events found`);
-    responseLines.push(`  (Checked: type, eventType, behaviorType, label, name, severity)`);
-  }
-  responseLines.push('');
-
-  if (exampleEvent) {
-    responseLines.push(`*Example Event:*`);
-    responseLines.push(formatExampleEvent(exampleEvent));
-  } else {
-    responseLines.push(`*Example Event:* No events found`);
+    responseLines.push(`*Example Severe Speeding Interval:* None found`);
   }
 
   const response = responseLines.join('\n');

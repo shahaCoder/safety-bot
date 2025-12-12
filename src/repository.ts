@@ -1,5 +1,6 @@
 import { PrismaClient, Chat } from '@prisma/client';
 import { SafetyEvent } from './samsara';
+import { UnifiedEvent } from './services/eventNormalize';
 
 const prisma = new PrismaClient();
 
@@ -86,19 +87,72 @@ export async function logSafetyEvent(
 }
 
 /**
- * Check if a safety event has already been processed.
- * Uses the database instead of in-memory Set.
+ * Log a unified event (safety or speeding) to the database.
+ * Works with both safety events and speeding intervals.
  *
- * @param samsaraEventId - Samsara event ID
+ * @param event - UnifiedEvent (normalized from safety or speeding)
+ * @param chatId - Telegram chat ID where the event was sent (BigInt or number)
+ * @param behavior - Behavior description string (e.g., "Severe Speeding", "Harsh Brake")
+ * @param videoUrl - Optional video URL that was sent
+ * @param timeLocal - Event time already converted to America/New_York timezone
+ */
+export async function logUnifiedEvent(
+  event: UnifiedEvent,
+  chatId: BigInt | number | null | undefined,
+  behavior: string,
+  videoUrl: string | null | undefined,
+  timeLocal: Date
+): Promise<void> {
+  try {
+    await prisma.safetyEventLog.upsert({
+      where: {
+        samsaraEventId: event.id, // Works for both safety events and speeding intervals
+      },
+      update: {
+        vehicleName: event.vehicleName ?? 'Unknown',
+        behavior,
+        timeLocal,
+        latitude: event.details?.location?.latitude ?? null,
+        longitude: event.details?.location?.longitude ?? null,
+        sentToChatId: chatId ? BigInt(Number(chatId)) : null,
+        videoUrl: videoUrl ?? null,
+        rawJson: event as any, // Store full unified event JSON
+        updatedAt: new Date(),
+      },
+      create: {
+        samsaraEventId: event.id,
+        vehicleName: event.vehicleName ?? 'Unknown',
+        behavior,
+        timeLocal,
+        latitude: event.details?.location?.latitude ?? null,
+        longitude: event.details?.location?.longitude ?? null,
+        sentToChatId: chatId ? BigInt(Number(chatId)) : null,
+        videoUrl: videoUrl ?? null,
+        rawJson: event as any, // Store full unified event JSON
+      },
+    });
+  } catch (error) {
+    console.error(`❌ Error logging unified event ${event.id}:`, error);
+    // Don't throw - logging errors shouldn't break the bot
+  }
+}
+
+/**
+ * Check if an event has already been processed.
+ * Uses the database instead of in-memory Set.
+ * 
+ * Supports both:
+ * - Safety events: uses Samsara event ID directly
+ * - Speeding intervals: uses stable key like "speeding:assetId:startTime:endTime"
+ *
+ * @param eventId - Unified event ID (can be Samsara event ID or stable key)
  * @returns true if event exists in database
  */
-export async function isEventProcessed(
-  samsaraEventId: string
-): Promise<boolean> {
+export async function isEventProcessed(eventId: string): Promise<boolean> {
   try {
     const existing = await prisma.safetyEventLog.findUnique({
       where: {
-        samsaraEventId,
+        samsaraEventId: eventId, // Works for both safety events and speeding intervals
       },
       select: {
         id: true,
@@ -107,7 +161,7 @@ export async function isEventProcessed(
     return existing !== null;
   } catch (error) {
     console.error(
-      `❌ Error checking if event ${samsaraEventId} is processed:`,
+      `❌ Error checking if event ${eventId} is processed:`,
       error
     );
     return false; // If error, assume not processed to avoid skipping events
