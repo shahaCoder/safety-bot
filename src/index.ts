@@ -2,6 +2,9 @@ import { Telegraf } from 'telegraf';
 import dotenv from 'dotenv';
 import cron from 'node-cron';
 import { Chat } from '@prisma/client';
+import * as fs from 'fs';
+import * as path from 'path';
+import axios from 'axios';
 
 import { ptiMessages } from './messages';
 import { getRecentSafetyEvents, SafetyEvent } from './samsara';
@@ -24,6 +27,17 @@ if (!BOT_TOKEN) {
 }
 
 const bot = new Telegraf(BOT_TOKEN);
+
+// Configuration for video download fallback
+const VIDEO_DOWNLOAD_MAX_SIZE_MB = parseInt(
+  process.env.VIDEO_DOWNLOAD_MAX_SIZE_MB || '25',
+  10
+);
+const VIDEO_DOWNLOAD_TIMEOUT_MS = parseInt(
+  process.env.VIDEO_DOWNLOAD_TIMEOUT_MS || '30000',
+  10
+);
+const DRY_RUN_MODE = process.env.DRY_RUN_MODE === 'true';
 
 
 // Языки для PTI-сообщений
@@ -363,6 +377,10 @@ https://www.google.com/maps?q=${lat},${lon}`;
  * Строим общий payload:
  * - caption
  * - videoUrl (ищем по всем возможным полям)
+ * 
+ * VIDEO URL SELECTION LOGIC (same for both /safety_test and cron):
+ * - Priority: downloadForwardVideoUrl > downloadInwardVideoUrl > downloadVideoUrl
+ * - This matches the behavior expected by the user
  */
 function buildSafetyPayload(
   ev: SafetyEvent,
@@ -376,6 +394,270 @@ function buildSafetyPayload(
   const videoUrl = forward || inward || generic;
 
   return { caption, videoUrl };
+}
+
+/**
+ * Mask URL for logging (hide query params and sensitive parts)
+ */
+function maskVideoUrl(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    return `${urlObj.protocol}//${urlObj.hostname}${urlObj.pathname}...`;
+  } catch {
+    return url.substring(0, 50) + '...';
+  }
+}
+
+/**
+ * Download video from URL to temporary file
+ * Returns path to temp file, or null on failure
+ */
+async function downloadVideoToTemp(
+  url: string,
+  eventId: string
+): Promise<string | null> {
+  const tempDir = '/tmp';
+  const tempFile = path.join(tempDir, `safety-video-${eventId}-${Date.now()}.mp4`);
+
+  try {
+    const response = await axios({
+      method: 'GET',
+      url,
+      responseType: 'stream',
+      timeout: VIDEO_DOWNLOAD_TIMEOUT_MS,
+      maxContentLength: VIDEO_DOWNLOAD_MAX_SIZE_MB * 1024 * 1024,
+    });
+
+    const writer = fs.createWriteStream(tempFile);
+    response.data.pipe(writer);
+
+    await new Promise<void>((resolve, reject) => {
+      writer.on('finish', resolve);
+      writer.on('error', reject);
+      response.data.on('error', reject);
+    });
+
+    return tempFile;
+  } catch (error: any) {
+    console.error(
+      `❌ Failed to download video for event ${eventId}:`,
+      error.message
+    );
+    // Clean up if file was partially created
+    if (fs.existsSync(tempFile)) {
+      fs.unlinkSync(tempFile);
+    }
+    return null;
+  }
+}
+
+/**
+ * Shared helper function to send safety alert with video.
+ * Used by both /safety_test and cron job to ensure identical behavior.
+ * 
+ * BEHAVIOR:
+ * - Video URL selection: forward > inward > generic (same as buildSafetyPayload)
+ * - Sending method: First tries sendVideo with URL (same as /safety_test uses ctx.replyWithVideo)
+ * - Fallback: If URL send fails, downloads video and sends as file stream
+ * - Error handling: If video fails, still sends text message with error logged (not in chat)
+ * 
+ * @param event - SafetyEvent from Samsara
+ * @param chatId - Telegram chat ID (number)
+ * @param caption - Full caption text (may include driver mention)
+ * @param dryRun - If true, simulate sending without actually sending to Telegram
+ * @returns Object with success status and video URL used (if any)
+ */
+async function sendSafetyAlertWithVideo(
+  event: SafetyEvent,
+  chatId: number,
+  caption: string,
+  dryRun: boolean = false
+): Promise<{ success: boolean; videoUrl?: string; error?: string }> {
+  const eventId = event.id;
+  const vehicleName = event.vehicle?.name ?? 'Unknown';
+  const vehicleId = event.vehicle?.id ?? 'Unknown';
+
+  // Select video URL using same logic as buildSafetyPayload
+  // Priority: forward > inward > generic
+  const forward = event.downloadForwardVideoUrl as string | undefined;
+  const inward = (event as any).downloadInwardVideoUrl as string | undefined;
+  const generic = (event as any).downloadVideoUrl as string | undefined;
+  const videoUrl = forward || inward || generic;
+
+  // Log context
+  const maskedUrl = videoUrl ? maskVideoUrl(videoUrl) : 'none';
+  let urlHostname = 'none';
+  if (videoUrl) {
+    try {
+      urlHostname = new URL(videoUrl).hostname;
+    } catch {
+      urlHostname = 'invalid-url';
+    }
+  }
+  
+  console.log(
+    `📤 [sendSafetyAlertWithVideo] Event ${eventId} | Truck: ${vehicleName} (${vehicleId}) | ChatId: ${chatId} | Video: ${maskedUrl} | Host: ${urlHostname}${dryRun ? ' [DRY RUN]' : ''}`
+  );
+
+  if (dryRun) {
+    console.log(`🔍 [DRY RUN] Would send to chatId ${chatId}:`);
+    console.log(`   Caption: ${caption.substring(0, 100)}...`);
+    console.log(`   Video URL: ${maskedUrl}`);
+    return { success: true, videoUrl };
+  }
+
+  // If no video URL, just send text message
+  if (!videoUrl) {
+    try {
+      await bot.telegram.sendMessage(chatId, caption, {
+        parse_mode: 'Markdown',
+      });
+      console.log(
+        `✅ [sendSafetyAlertWithVideo] Event ${eventId} sent (text only) to chatId ${chatId}`
+      );
+      return { success: true };
+    } catch (error: any) {
+      const errorMsg = error.response?.description || error.message || 'Unknown error';
+      console.error(
+        `❌ [sendSafetyAlertWithVideo] Event ${eventId} failed to send text to chatId ${chatId}:`,
+        errorMsg
+      );
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  // Try sending video with URL first (same as /safety_test uses ctx.replyWithVideo)
+  try {
+    await bot.telegram.sendVideo(chatId, videoUrl, {
+      caption,
+      parse_mode: 'Markdown',
+    });
+    console.log(
+      `✅ [sendSafetyAlertWithVideo] Event ${eventId} sent with video (URL) to chatId ${chatId}`
+    );
+    return { success: true, videoUrl };
+  } catch (urlError: any) {
+    const urlErrorMsg = urlError.response?.description || urlError.message || 'Unknown error';
+    const urlErrorCode = urlError.response?.error_code;
+    
+    console.warn(
+      `⚠️ [sendSafetyAlertWithVideo] Event ${eventId} failed to send video via URL (code: ${urlErrorCode}): ${urlErrorMsg}`
+    );
+    console.log(
+      `   Attempting fallback: download and send as file stream...`
+    );
+
+    // Check if error is a common Telegram fetch error that warrants fallback
+    const shouldFallback =
+      urlErrorCode === 400 || // Bad Request (often means Telegram can't fetch URL)
+      urlErrorCode === 403 || // Forbidden
+      urlErrorMsg.toLowerCase().includes('bad request') ||
+      urlErrorMsg.toLowerCase().includes('file') ||
+      urlErrorMsg.toLowerCase().includes('fetch');
+
+    if (!shouldFallback) {
+      // Not a fetch error, probably something else - send text only
+      console.log(
+        `   Error doesn't warrant fallback, sending text only...`
+      );
+      try {
+        await bot.telegram.sendMessage(chatId, caption, {
+          parse_mode: 'Markdown',
+        });
+        console.log(
+          `✅ [sendSafetyAlertWithVideo] Event ${eventId} sent (text only, video failed) to chatId ${chatId}`
+        );
+        // Log video failure reason (not in chat message)
+        console.log(
+          `   (video failed: ${urlErrorMsg})`
+        );
+        return { success: true, videoUrl, error: urlErrorMsg };
+      } catch (textError: any) {
+        const textErrorMsg = textError.response?.description || textError.message || 'Unknown error';
+        console.error(
+          `❌ [sendSafetyAlertWithVideo] Event ${eventId} failed to send text fallback to chatId ${chatId}:`,
+          textErrorMsg
+        );
+        return { success: false, error: textErrorMsg };
+      }
+    }
+
+    // Fallback: Download video and send as file stream
+    const tempFile = await downloadVideoToTemp(videoUrl, eventId);
+    if (!tempFile) {
+      // Download failed, send text only
+      console.log(
+        `   Download failed, sending text only...`
+      );
+      try {
+        await bot.telegram.sendMessage(chatId, caption, {
+          parse_mode: 'Markdown',
+        });
+        console.log(
+          `✅ [sendSafetyAlertWithVideo] Event ${eventId} sent (text only, video download failed) to chatId ${chatId}`
+        );
+        console.log(
+          `   (video failed: download error)`
+        );
+        return { success: true, videoUrl, error: 'Download failed' };
+      } catch (textError: any) {
+        const textErrorMsg = textError.response?.description || textError.message || 'Unknown error';
+        console.error(
+          `❌ [sendSafetyAlertWithVideo] Event ${eventId} failed to send text fallback to chatId ${chatId}:`,
+          textErrorMsg
+        );
+        return { success: false, error: textErrorMsg };
+      }
+    }
+
+    // Send video as file stream
+    try {
+      const videoStream = fs.createReadStream(tempFile);
+      await bot.telegram.sendVideo(chatId, { source: videoStream }, {
+        caption,
+        parse_mode: 'Markdown',
+      });
+      console.log(
+        `✅ [sendSafetyAlertWithVideo] Event ${eventId} sent with video (file stream fallback) to chatId ${chatId}`
+      );
+      
+      // Clean up temp file
+      fs.unlinkSync(tempFile);
+      return { success: true, videoUrl };
+    } catch (streamError: any) {
+      const streamErrorMsg = streamError.response?.description || streamError.message || 'Unknown error';
+      console.error(
+        `❌ [sendSafetyAlertWithVideo] Event ${eventId} failed to send video stream to chatId ${chatId}:`,
+        streamErrorMsg
+      );
+      
+      // Clean up temp file
+      if (fs.existsSync(tempFile)) {
+        fs.unlinkSync(tempFile);
+      }
+      
+      // Last resort: send text only
+      try {
+        await bot.telegram.sendMessage(chatId, caption, {
+          parse_mode: 'Markdown',
+        });
+        console.log(
+          `✅ [sendSafetyAlertWithVideo] Event ${eventId} sent (text only, all video methods failed) to chatId ${chatId}`
+        );
+        console.log(
+          `   (video failed: ${streamErrorMsg})`
+        );
+        return { success: true, videoUrl, error: streamErrorMsg };
+      } catch (textError: any) {
+        const textErrorMsg = textError.response?.description || textError.message || 'Unknown error';
+        console.error(
+          `❌ [sendSafetyAlertWithVideo] Event ${eventId} completely failed to chatId ${chatId}:`,
+          textErrorMsg
+        );
+        return { success: false, error: textErrorMsg };
+      }
+    }
+  }
 }
 
 // ================== ОСНОВНАЯ ЛОГИКА SAFETY-НОТИФИКАЦИЙ ==================
@@ -450,7 +732,7 @@ async function checkAndNotifySafetyEvents() {
     }
 
     const chatId = Number(chat.telegramChatId);
-    const { caption, videoUrl } = buildSafetyPayload(ev);
+    const { caption } = buildSafetyPayload(ev);
 
     // Build driver mention if driver is set
     const chatWithDriver = chat as Chat & {
@@ -480,31 +762,32 @@ async function checkAndNotifySafetyEvents() {
     // Convert time to Date object for database
     const timeLocal = convertToNewYorkTime(ev.time);
 
-    try {
-      if (videoUrl) {
-        await bot.telegram.sendVideo(chatId, videoUrl, {
-          caption: finalCaption,
-          parse_mode: 'Markdown',
-        });
-      } else {
-        await bot.telegram.sendMessage(chatId, finalCaption, {
-          parse_mode: 'Markdown',
-        });
-      }
+    // Use shared helper function (same as /safety_test)
+    // This ensures identical behavior: same video selection, same sending method, same error handling
+    const result = await sendSafetyAlertWithVideo(
+      ev,
+      chatId,
+      finalCaption,
+      DRY_RUN_MODE
+    );
 
-      // Log successful event to database
-      await logSafetyEvent(ev, chatId, behavior, videoUrl, timeLocal);
+    // Extract video URL from event (same logic as helper uses)
+    const forward = ev.downloadForwardVideoUrl as string | undefined;
+    const inward = (ev as any).downloadInwardVideoUrl as string | undefined;
+    const generic = (ev as any).downloadVideoUrl as string | undefined;
+    const videoUrl = forward || inward || generic;
 
+    // Log event to database (always log, even if sending failed)
+    await logSafetyEvent(ev, chatId, behavior, videoUrl, timeLocal);
+
+    if (result.success) {
       console.log(
-        `✅ Sent safety event ${ev.id} for ${vehicleName} to ${chat.name} (chatId=${chatId})`,
+        `✅ Sent safety event ${ev.id} for ${vehicleName} to ${chat.name} (chatId=${chatId})${result.error ? ' (video failed, text sent)' : ''}`,
       );
-    } catch (err) {
+    } else {
       console.error(
-        `❌ Failed to send safety event ${ev.id} to ${chat.name} (chatId=${chatId})`,
-        err,
+        `❌ Failed to send safety event ${ev.id} to ${chat.name} (chatId=${chatId}): ${result.error}`,
       );
-      // Still log the event even if sending failed (sentToChatId will be set, but send failed)
-      await logSafetyEvent(ev, chatId, behavior, videoUrl, timeLocal);
     }
   }
 }
@@ -533,17 +816,30 @@ bot.command('safety_test', async (ctx) => {
   }
 
   const top = relevant.slice(0, 5);
+  const chatId = ctx.chat?.id;
 
+  if (!chatId) {
+    await ctx.reply('❌ Could not determine chat ID.');
+    return;
+  }
+
+  // Use shared helper function (same as cron)
+  // Note: /safety_test doesn't add driver mentions, so we use caption directly
   for (const ev of top) {
-    const { caption, videoUrl } = buildSafetyPayload(ev);
+    const { caption } = buildSafetyPayload(ev);
+    
+    // Use shared helper to ensure same behavior as cron
+    const result = await sendSafetyAlertWithVideo(
+      ev,
+      chatId,
+      caption,
+      false // Not a dry run for manual test
+    );
 
-    if (videoUrl) {
-      await ctx.replyWithVideo(videoUrl, {
-        caption,
-        parse_mode: 'Markdown',
-      });
-    } else {
-      await ctx.reply(caption, { parse_mode: 'Markdown' });
+    if (!result.success) {
+      await ctx.reply(
+        `⚠️ Failed to send event ${ev.id}: ${result.error || 'Unknown error'}`,
+      );
     }
   }
 });
