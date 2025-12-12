@@ -73,8 +73,9 @@ bot.use((ctx, next) => {
 });
 
 // Игнорировать /start (если кто-то вдруг напишет в группу)
-bot.start(() => {
+bot.start((ctx) => {
   // ничего не отвечаем
+  console.log('[TG] from.id =', ctx.from?.id, 'chat.type =', ctx.chat?.type);
 });
 
 // ================== БАЗОВЫЕ КОМАНДЫ ==================
