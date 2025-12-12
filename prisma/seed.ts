@@ -29,7 +29,7 @@ const driverSeeds: DriverSeedData[] = [
   {
     id: 3,
     name: 'PTI TEST UZ',
-    chatId: -1003474651531,
+    chatId: -1003427092224,
     language: 'ru',
     trucks: ['Truck 10'],
   },
@@ -50,14 +50,14 @@ const driverSeeds: DriverSeedData[] = [
   {
     id: 6,
     name: 'PTI TEST UZ',
-    chatId: -1003474651531,
+    chatId: -1003406927405,
     language: 'uz',
     trucks: ['Truck 027'],
   },
   {
     id: 7,
     name: 'PTI TEST UZ',
-    chatId: -1003474651531,
+    chatId: -1003214745822,
     language: 'uz',
     trucks: ['Truck 195'],
   },
@@ -85,14 +85,14 @@ const driverSeeds: DriverSeedData[] = [
   {
     id: 11,
     name: 'PTI TEST UZ',
-    chatId: -1003474651531,
+    chatId: -1003388481064,
     language: 'uz',
     trucks: ['Truck 710'],
   },
   {
     id: 12,
     name: 'PTI TEST UZ',
-    chatId: -1003474651531,
+    chatId: -1003447936022,
     language: 'uz',
     trucks: ['Truck 711'],
   },
@@ -134,21 +134,21 @@ const driverSeeds: DriverSeedData[] = [
   {
     id: 18,
     name: 'PTI TEST UZ',
-    chatId: -1003474651531,
+    chatId: -1003462238286,
     language: 'uz',
     trucks: ['Truck 702'],
   },
   {
     id: 19,
     name: 'PTI TEST UZ',
-    chatId: -1003474651531,
+    chatId: -1003321162348,
     language: 'uz',
     trucks: ['Truck 705'],
   },
   {
     id: 20,
     name: 'PTI TEST UZ',
-    chatId: -1003474651531,
+    chatId: -1003283686253,
     language: 'uz',
     trucks: ['Truck 715'],
   },
@@ -172,7 +172,7 @@ const driverSeeds: DriverSeedData[] = [
     chatId: -1003372385236,
     language: 'uz',
     trucks: ['Truck 1982'],
-  },
+  }
 ];
 
 // Helper function to map language string to ChatLanguage enum
