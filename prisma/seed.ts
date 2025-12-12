@@ -1,0 +1,246 @@
+import { PrismaClient, ChatLanguage } from '@prisma/client';
+
+const prisma = new PrismaClient();
+
+// Mimic the current drivers.ts structure for seeding
+interface DriverSeedData {
+  id: number;
+  name: string;
+  chatId: number; // Telegram chat ID (can be negative for groups)
+  language: 'en' | 'ru' | 'uz';
+  trucks: string[]; // Array of Samsara vehicle names
+}
+
+const driverSeeds: DriverSeedData[] = [
+  {
+    id: 1,
+    name: 'PTI TEST RU',
+    chatId: -1003477748349,
+    language: 'uz',
+    trucks: ['Truck 105'],
+  },
+  {
+    id: 2,
+    name: 'PTI TEST EN',
+    chatId: -1003246951032,
+    language: 'uz',
+    trucks: ['Truck 712'],
+  },
+  {
+    id: 3,
+    name: 'PTI TEST UZ',
+    chatId: -1003474651531,
+    language: 'ru',
+    trucks: ['Truck 10'],
+  },
+  {
+    id: 4,
+    name: 'PTI TEST UZ',
+    chatId: -1003375592543,
+    language: 'uz',
+    trucks: ['Truck 1975'],
+  },
+  {
+    id: 5,
+    name: 'PTI TEST UZ',
+    chatId: -1003242506266,
+    language: 'uz',
+    trucks: ['Truck 018'],
+  },
+  {
+    id: 6,
+    name: 'PTI TEST UZ',
+    chatId: -1003474651531,
+    language: 'uz',
+    trucks: ['Truck 027'],
+  },
+  {
+    id: 7,
+    name: 'PTI TEST UZ',
+    chatId: -1003474651531,
+    language: 'uz',
+    trucks: ['Truck 195'],
+  },
+  {
+    id: 8,
+    name: 'PTI TEST UZ',
+    chatId: -1003474651531,
+    language: 'uz',
+    trucks: ['Truck 700'],
+  },
+  {
+    id: 9,
+    name: 'PTI TEST UZ',
+    chatId: -4170880476,
+    language: 'uz',
+    trucks: ['Truck 701'],
+  },
+  {
+    id: 10,
+    name: 'PTI TEST UZ',
+    chatId: -1003463374427,
+    language: 'uz',
+    trucks: ['Truck 704'],
+  },
+  {
+    id: 11,
+    name: 'PTI TEST UZ',
+    chatId: -1003474651531,
+    language: 'uz',
+    trucks: ['Truck 710'],
+  },
+  {
+    id: 12,
+    name: 'PTI TEST UZ',
+    chatId: -1003474651531,
+    language: 'uz',
+    trucks: ['Truck 711'],
+  },
+  {
+    id: 13,
+    name: 'PTI TEST UZ',
+    chatId: -4998245805,
+    language: 'uz',
+    trucks: ['Truck 714'],
+  },
+  {
+    id: 14,
+    name: 'PTI TEST UZ',
+    chatId: -1003493624363,
+    language: 'uz',
+    trucks: ['Truck 716'],
+  },
+  {
+    id: 15,
+    name: 'PTI TEST UZ',
+    chatId: -4285641809,
+    language: 'uz',
+    trucks: ['Truck 717'],
+  },
+  {
+    id: 16,
+    name: 'PTI TEST UZ',
+    chatId: -1003449100289,
+    language: 'uz',
+    trucks: ['Truck 6974'],
+  },
+  {
+    id: 17,
+    name: 'PTI TEST UZ',
+    chatId: -1003253543031,
+    language: 'uz',
+    trucks: ['Truck 777'],
+  },
+  {
+    id: 18,
+    name: 'PTI TEST UZ',
+    chatId: -1003474651531,
+    language: 'uz',
+    trucks: ['Truck 702'],
+  },
+  {
+    id: 19,
+    name: 'PTI TEST UZ',
+    chatId: -1003474651531,
+    language: 'uz',
+    trucks: ['Truck 705'],
+  },
+  {
+    id: 20,
+    name: 'PTI TEST UZ',
+    chatId: -1003474651531,
+    language: 'uz',
+    trucks: ['Truck 715'],
+  },
+  {
+    id: 21,
+    name: 'PTI TEST UZ',
+    chatId: -1003396721081,
+    language: 'uz',
+    trucks: ['Truck 0690'],
+  },
+  {
+    id: 22,
+    name: 'PTI TEST UZ',
+    chatId: -5079696595,
+    language: 'uz',
+    trucks: ['Truck 707'],
+  },
+  {
+    id: 23,
+    name: 'PTI TEST UZ',
+    chatId: -1003372385236,
+    language: 'uz',
+    trucks: ['Truck 1982'],
+  },
+];
+
+// Helper function to map language string to ChatLanguage enum
+function mapLanguage(lang: 'en' | 'ru' | 'uz'): ChatLanguage {
+  switch (lang) {
+    case 'en':
+      return ChatLanguage.en;
+    case 'ru':
+      return ChatLanguage.ru;
+    case 'uz':
+      return ChatLanguage.uz;
+    default:
+      return ChatLanguage.en;
+  }
+}
+
+async function main() {
+  console.log('🌱 Starting database seed...');
+
+  for (const driver of driverSeeds) {
+    // Upsert Chat - use telegramChatId as unique identifier
+    const chat = await prisma.chat.upsert({
+      where: {
+        telegramChatId: BigInt(driver.chatId),
+      },
+      update: {
+        name: driver.name,
+        language: mapLanguage(driver.language),
+        updatedAt: new Date(),
+      },
+      create: {
+        name: driver.name,
+        telegramChatId: BigInt(driver.chatId),
+        language: mapLanguage(driver.language),
+      },
+    });
+
+    console.log(`✅ Upserted Chat: ${chat.name} (ID: ${chat.id}, telegramChatId: ${chat.telegramChatId})`);
+
+    // Upsert each Truck for this Chat
+    for (const truckName of driver.trucks) {
+      const truck = await prisma.truck.upsert({
+        where: {
+          name: truckName,
+        },
+        update: {
+          chatId: chat.id,
+          updatedAt: new Date(),
+        },
+        create: {
+          name: truckName,
+          chatId: chat.id,
+        },
+      });
+
+      console.log(`  ✅ Upserted Truck: ${truck.name} → Chat ID: ${truck.chatId}`);
+    }
+  }
+
+  console.log('✅ Seed completed successfully!');
+}
+
+main()
+  .catch((e) => {
+    console.error('❌ Seed failed:', e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
+

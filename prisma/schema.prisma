@@ -1,0 +1,69 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Language enum for Chat
+enum ChatLanguage {
+  en
+  ru
+  uz
+}
+
+// Chat model - represents a Telegram group/chat
+model Chat {
+  id              Int           @id @default(autoincrement())
+  name            String        // Human-readable group name
+  telegramChatId  BigInt        @unique // Telegram chat ID (can be negative for groups)
+  language        ChatLanguage  // Language for PTI messages
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // One chat can have multiple trucks
+  trucks          Truck[]
+
+  @@map("chats")
+}
+
+// Truck model - represents a vehicle from Samsara
+model Truck {
+  id            Int      @id @default(autoincrement())
+  name          String   @unique // Must exactly match Samsara event.vehicle.name (e.g., "Truck 105")
+  chatId        Int      // Foreign key to Chat
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relationship: each truck belongs to one chat
+  chat          Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@map("trucks")
+}
+
+// SafetyEventLog model - stores every processed Samsara safety event
+model SafetyEventLog {
+  id              Int      @id @default(autoincrement())
+  samsaraEventId  String   @unique // Samsara event ID (unique to prevent duplicates)
+  vehicleName     String   // Vehicle name from Samsara (e.g., "Truck 105")
+  behavior        String   // Behavior description (e.g., "Speeding", "Harsh Brake")
+  timeLocal       DateTime // Event time (converted to America/New_York)
+  latitude        Float?   // Optional latitude
+  longitude       Float?   // Optional longitude
+  sentToChatId    BigInt?  // Telegram chat ID where event was sent (optional)
+  videoUrl        String?  // Optional video URL from Samsara
+  rawJson         Json     // Full raw JSON from Samsara API for debugging/audit
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("safety_event_logs")
+  @@index([samsaraEventId])
+  @@index([vehicleName])
+  @@index([timeLocal])
+}
+
