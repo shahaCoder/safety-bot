@@ -18,6 +18,8 @@ import {
   setChatDriver,
   clearChatDriver,
 } from './repository';
+import { requireAdminPrivateChat } from './guards/isAdmin';
+import { handleDebugSafety } from './commands/debugSafety';
 
 dotenv.config();
 
@@ -56,7 +58,13 @@ async function isChatAdmin(ctx: any): Promise<boolean> {
   );
 }
 
-// Игнорировать все личные чаты 
+// ================== ADMIN DEBUG COMMANDS (PRIVATE CHAT ONLY) ==================
+// These must be registered BEFORE the private chat filter
+// They use their own guard to ensure admin + private chat only
+
+bot.command('debug_safety', requireAdminPrivateChat, handleDebugSafety);
+
+// Игнорировать все личные чаты (except admin debug commands above)
 bot.use((ctx, next) => {
   if (ctx.chat?.type === 'private') {
     return; // молчим
