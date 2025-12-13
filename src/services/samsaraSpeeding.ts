@@ -38,10 +38,157 @@ function kmhToMph(kmh: number | null | undefined): number | undefined {
 }
 
 /**
+ * Window type for time range queries.
+ */
+type Window = { startTime: string; endTime: string };
+
+/**
+ * Expand a time window by ±minutes, returning ISO strings.
+ * Ensures startTime <= endTime (clamps if needed).
+ * 
+ * @param isoStart - Start time as ISO string
+ * @param isoEnd - End time as ISO string
+ * @param minutes - Minutes to expand by (will expand both directions)
+ * @returns Expanded window with ISO string timestamps
+ */
+function expandWindow(isoStart: string, isoEnd: string, minutes: number): Window {
+  const start = new Date(isoStart);
+  const end = new Date(isoEnd);
+  
+  // Expand by ±minutes
+  const expandedStart = new Date(start.getTime() - minutes * 60 * 1000);
+  const expandedEnd = new Date(end.getTime() + minutes * 60 * 1000);
+  
+  // Ensure start <= end (clamp)
+  const finalStart = expandedStart <= expandedEnd ? expandedStart : expandedEnd;
+  const finalEnd = expandedStart <= expandedEnd ? expandedEnd : expandedStart;
+  
+  return {
+    startTime: finalStart.toISOString(),
+    endTime: finalEnd.toISOString(),
+  };
+}
+
+/**
+ * Internal helper: Fetch speeding intervals for a specific time window and chunk.
+ * Returns the raw intervals found (not filtered by severity).
+ */
+async function fetchSpeedingIntervalsForWindow(
+  token: string,
+  window: Window,
+  chunk: string[],
+  chunkIdx: number,
+  totalChunks: number
+): Promise<{ records: number; intervals: SpeedingInterval[] }> {
+  const allIntervals: SpeedingInterval[] = [];
+  let totalRecords = 0;
+  let cursor: string | undefined = undefined;
+  let hasMore = true;
+  let pageCount = 0;
+  const maxPages = 100; // Safety limit
+
+  while (hasMore && pageCount < maxPages) {
+    // Build URLSearchParams with repeated assetIds keys
+    const params = new URLSearchParams();
+    params.set('startTime', window.startTime);
+    params.set('endTime', window.endTime);
+    
+    // Append each assetId as separate param (repeated keys)
+    for (const assetId of chunk) {
+      params.append('assetIds', assetId);
+    }
+
+    if (cursor) {
+      params.set('cursor', cursor);
+    }
+
+    const url = `https://api.samsara.com/speeding-intervals/stream`;
+
+    const res = await axios.get(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+      params,
+    });
+
+    // Parse response: records = payload.data ?? []
+    const records = res.data?.data ?? [];
+    if (!Array.isArray(records)) {
+      console.warn(`[SAMSARA][SPEEDING] Chunk ${chunkIdx + 1}/${totalChunks}: Unexpected response structure`);
+      break;
+    }
+
+    totalRecords += records.length;
+
+    // Flatten: flatIntervals = records.flatMap(r => (r.intervals ?? []).map(i => ({...i, assetId: r.asset.id})))
+    const flatIntervals = records.flatMap((r: any) => {
+      const intervals = r.intervals ?? [];
+      const assetId = r.asset?.id;
+      if (!assetId) return [];
+      
+      return intervals.map((i: any) => ({
+        ...i,
+        assetId: String(assetId),
+      }));
+    });
+
+    // Convert and add to all intervals
+    for (const interval of flatIntervals) {
+      const maxSpeedMph = kmhToMph(interval.maxSpeedKilometersPerHour);
+      const speedLimitMph = kmhToMph(interval.postedSpeedLimitKilometersPerHour);
+
+      const flattenedInterval: SpeedingInterval = {
+        assetId: String(interval.assetId),
+        startTime: interval.startTime,
+        endTime: interval.endTime,
+        severityLevel: interval.severityLevel,
+        maxSpeedMph,
+        speedLimitMph,
+        driverId: interval.driverId,
+        // Include location and other fields
+        ...Object.fromEntries(
+          Object.entries(interval).filter(
+            ([key]) =>
+              ![
+                'assetId',
+                'startTime',
+                'endTime',
+                'severityLevel',
+                'maxSpeedKilometersPerHour',
+                'postedSpeedLimitKilometersPerHour',
+                'driverId',
+              ].includes(key)
+          )
+        ),
+      };
+
+      allIntervals.push(flattenedInterval);
+    }
+
+    // Check for pagination
+    cursor = res.data?.pagination?.nextCursor;
+    hasMore = !!cursor && flatIntervals.length > 0;
+    pageCount++;
+  }
+
+  return {
+    records: totalRecords,
+    intervals: allIntervals,
+  };
+}
+
+/**
  * Fetch speeding intervals from Samsara API for all vehicles (or specified assetIds).
  * 
  * Automatically fetches all vehicle asset IDs if not provided.
  * Implements chunking to handle large fleets.
+ * 
+ * ROBUST WINDOW EXPANSION:
+ * - Starts with base window (from/to)
+ * - Expands to ±120 minutes minimum
+ * - If empty, retries with ±360 minutes
+ * - Optionally retries with ±720 minutes (12 hours) as final fallback
  * 
  * Endpoint: GET https://api.samsara.com/speeding-intervals/stream
  * 
@@ -87,14 +234,27 @@ export async function fetchSpeedingIntervals(
   }
 
   if (assetIds.length === 0) {
-    console.warn('[SAMSARA] No asset IDs available for speeding intervals fetch');
+    console.warn('[SAMSARA][SPEEDING] No asset IDs available for speeding intervals fetch');
     return { total: 0, severe: [] };
   }
 
-  console.log(`[SAMSARA] Fetching speeding intervals for ${assetIds.length} vehicles (mode: ${useEnvOverride ? 'env override' : 'auto-fetched'})`);
+  console.log(`[SAMSARA][SPEEDING] Fetching for ${assetIds.length} vehicles (mode: ${useEnvOverride ? 'env override' : 'auto-fetched'})`);
+
+  // Base window from options
+  const baseWindow: Window = {
+    startTime: opts.from.toISOString(),
+    endTime: opts.to.toISOString(),
+  };
+
+  // Window expansion strategy: try ±120m, then ±360m, then ±720m
+  const expansionStrategies = [
+    { minutes: 120, label: '±120m' },
+    { minutes: 360, label: '±360m' },
+    { minutes: 720, label: '±720m' },
+  ];
 
   // Chunking configuration
-  const CHUNK_SIZE = 200; // Configurable chunk size
+  const CHUNK_SIZE = 200;
   const chunks: string[][] = [];
   for (let i = 0; i < assetIds.length; i += CHUNK_SIZE) {
     chunks.push(assetIds.slice(i, i + CHUNK_SIZE));
@@ -103,128 +263,88 @@ export async function fetchSpeedingIntervals(
   const allFlattenedIntervals: SpeedingInterval[] = [];
   const severeIntervals: SpeedingInterval[] = [];
 
-  // Process each chunk
+  // Process each chunk with window expansion
   for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
     const chunk = chunks[chunkIdx];
+    const assetIdsStr = chunk.slice(0, 3).join(',') + (chunk.length > 3 ? `...(+${chunk.length - 3})` : '');
     
-    try {
-      let cursor: string | undefined = undefined;
-      let hasMore = true;
-      let pageCount = 0;
-      const maxPages = 100; // Safety limit
+    let chunkIntervals: SpeedingInterval[] = [];
+    let chunkRecords = 0;
+    let usedWindow: Window | null = null;
+    let usedExpansion: string | null = null;
 
-      let chunkRecordsCount = 0;
-      let chunkIntervalsCount = 0;
-      let chunkSevereCount = 0;
-
-      while (hasMore && pageCount < maxPages) {
-        // Build URLSearchParams with repeated assetIds keys
-        const params = new URLSearchParams();
-        params.set('startTime', opts.from.toISOString());
-        params.set('endTime', opts.to.toISOString());
-        
-        // Append each assetId as separate param (repeated keys)
-        for (const assetId of chunk) {
-          params.append('assetIds', assetId);
-        }
-
-        if (cursor) {
-          params.set('cursor', cursor);
-        }
-
-        const url = `https://api.samsara.com/speeding-intervals/stream?${params.toString()}`;
-
-        const res = await axios.get(url, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/json',
-          },
-        });
-
-        // Parse response: records = payload.data ?? []
-        const records = res.data?.data ?? [];
-        if (!Array.isArray(records)) {
-          console.warn(`[SAMSARA] Chunk ${chunkIdx + 1}/${chunks.length}: Unexpected response structure`);
-          break;
-        }
-
-        // Flatten: flatIntervals = records.flatMap(r => (r.intervals ?? []).map(i => ({...i, assetId: r.asset.id})))
-        const flatIntervals = records.flatMap((r: any) => {
-          const intervals = r.intervals ?? [];
-          const assetId = r.asset?.id;
-          if (!assetId) return [];
-          
-          return intervals.map((i: any) => ({
-            ...i,
-            assetId: String(assetId),
-          }));
-        });
-
-        chunkRecordsCount += records.length;
-        chunkIntervalsCount += flatIntervals.length;
-
-        // Convert and add to all intervals
-        for (const interval of flatIntervals) {
-          const maxSpeedMph = kmhToMph(interval.maxSpeedKilometersPerHour);
-          const speedLimitMph = kmhToMph(interval.postedSpeedLimitKilometersPerHour);
-
-          const flattenedInterval: SpeedingInterval = {
-            assetId: String(interval.assetId),
-            startTime: interval.startTime,
-            endTime: interval.endTime,
-            severityLevel: interval.severityLevel,
-            maxSpeedMph,
-            speedLimitMph,
-            driverId: interval.driverId,
-            // Include location and other fields
-            ...Object.fromEntries(
-              Object.entries(interval).filter(
-                ([key]) =>
-                  ![
-                    'assetId',
-                    'startTime',
-                    'endTime',
-                    'severityLevel',
-                    'maxSpeedKilometersPerHour',
-                    'postedSpeedLimitKilometersPerHour',
-                    'driverId',
-                  ].includes(key)
-              )
-            ),
-          };
-
-          allFlattenedIntervals.push(flattenedInterval);
-
-          // Filter for severe: severityLevel?.toLowerCase() === 'severe'
-          const severityLevel = (interval.severityLevel || '').toLowerCase().trim();
-          if (severityLevel === 'severe') {
-            severeIntervals.push(flattenedInterval);
-            chunkSevereCount++;
-          }
-        }
-
-        // Check for pagination
-        cursor = res.data?.pagination?.nextCursor;
-        hasMore = !!cursor && flatIntervals.length > 0;
-        pageCount++;
-      }
-
-      // Log chunk results
+    // Try each expansion strategy until we get data
+    for (const strategy of expansionStrategies) {
+      const expandedWindow = expandWindow(baseWindow.startTime, baseWindow.endTime, strategy.minutes);
+      
       console.log(
-        `[SAMSARA] speeding chunk ${chunkIdx + 1}/${chunks.length}: records=${chunkRecordsCount} intervals=${chunkIntervalsCount} severe=${chunkSevereCount}`
+        `[SAMSARA][SPEEDING] request assetIds=${assetIdsStr} window=${expandedWindow.startTime}..${expandedWindow.endTime} (${strategy.label})`
       );
-    } catch (err: any) {
-      console.error(
-        `❌ Error fetching speeding intervals chunk ${chunkIdx + 1}/${chunks.length}:`,
-        err.response?.data || err.message
-      );
-      // Continue with next chunk instead of failing completely
+
+      try {
+        const result = await fetchSpeedingIntervalsForWindow(
+          token,
+          expandedWindow,
+          chunk,
+          chunkIdx + 1,
+          chunks.length
+        );
+
+        chunkRecords = result.records;
+        chunkIntervals = result.intervals;
+
+        const severeCount = chunkIntervals.filter(
+          (i) => (i.severityLevel || '').toLowerCase().trim() === 'severe'
+        ).length;
+
+        console.log(
+          `[SAMSARA][SPEEDING] response records=${chunkRecords} intervals=${chunkIntervals.length} severe=${severeCount} (${strategy.label})`
+        );
+
+        // If we got data, use this window and stop retrying
+        if (chunkIntervals.length > 0) {
+          usedWindow = expandedWindow;
+          usedExpansion = strategy.label;
+          break;
+        } else if (strategy.minutes < 720) {
+          // Only log retry if not the last strategy
+          console.log(
+            `[SAMSARA][SPEEDING] retry with expanded window ${strategy.label} (empty response)`
+          );
+        }
+      } catch (err: any) {
+        console.error(
+          `[SAMSARA][SPEEDING] Error fetching chunk ${chunkIdx + 1}/${chunks.length} with ${strategy.label}:`,
+          err.response?.data || err.message
+        );
+        // Continue to next expansion strategy
+      }
     }
+
+    // Add intervals to collections
+    for (const interval of chunkIntervals) {
+      allFlattenedIntervals.push(interval);
+
+      // Filter for severe: severityLevel?.toLowerCase() === 'severe'
+      const severityLevel = (interval.severityLevel || '').toLowerCase().trim();
+      if (severityLevel === 'severe') {
+        severeIntervals.push(interval);
+      }
+    }
+
+    // Log chunk summary
+    const chunkSevereCount = chunkIntervals.filter(
+      (i) => (i.severityLevel || '').toLowerCase().trim() === 'severe'
+    ).length;
+    
+    console.log(
+      `[SAMSARA][SPEEDING] chunk ${chunkIdx + 1}/${chunks.length}: records=${chunkRecords} intervals=${chunkIntervals.length} severe=${chunkSevereCount} (window: ${usedExpansion || 'none'})`
+    );
   }
 
   // Final summary
   console.log(
-    `[SAMSARA] Total: ${allFlattenedIntervals.length} intervals (all), ${severeIntervals.length} severe, across ${chunks.length} chunk(s)`
+    `[SAMSARA][SPEEDING] Total: ${allFlattenedIntervals.length} intervals (all), ${severeIntervals.length} severe, across ${chunks.length} chunk(s)`
   );
 
   return {

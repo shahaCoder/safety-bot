@@ -1135,6 +1135,78 @@ bot.command('safety_test', async (ctx) => {
   }
 });
 
+// ================== /test_speeding (DEV/TEST) ==================
+
+/**
+ * Test command to verify speeding intervals fetching with window expansion.
+ * Admin-only, private chat only.
+ * 
+ * Usage: /test_speeding [hours]
+ * Default: 2 hours lookback
+ */
+bot.command('test_speeding', requireAdminPrivateChat, async (ctx) => {
+  const args = ctx.message?.text?.split(/\s+/) || [];
+  const hoursArg = args[1] ? parseInt(args[1], 10) : 2;
+  const hours = Math.max(1, Math.min(48, hoursArg || 2));
+
+  await ctx.reply(`🔍 Testing speeding intervals fetch (last ${hours} hours)...`);
+
+  const now = new Date();
+  const from = new Date(now.getTime() - hours * 60 * 60 * 1000);
+
+  try {
+    const result = await fetchSpeedingIntervals({ from, to: now });
+
+    const responseLines: string[] = [];
+    responseLines.push(`📊 Speeding Intervals Test Results`);
+    responseLines.push(`Time Window: ${from.toISOString()} to ${now.toISOString()}`);
+    responseLines.push(`Window Duration: ${hours} hours`);
+    responseLines.push('');
+    responseLines.push(`Total Intervals: ${result.total}`);
+    responseLines.push(`Severe Intervals: ${result.severe.length}`);
+    responseLines.push('');
+
+    if (result.severe.length > 0) {
+      responseLines.push(`✅ Found ${result.severe.length} severe speeding interval(s):`);
+      responseLines.push('');
+
+      // Show first 3 severe intervals as examples
+      const examples = result.severe.slice(0, 3);
+      for (let i = 0; i < examples.length; i++) {
+        const interval = examples[i];
+        responseLines.push(`Example ${i + 1}:`);
+        responseLines.push(`  Asset ID: ${interval.assetId}`);
+        responseLines.push(`  Start: ${new Date(interval.startTime).toISOString()}`);
+        responseLines.push(`  End: ${new Date(interval.endTime).toISOString()}`);
+        responseLines.push(`  Max Speed: ${interval.maxSpeedMph ?? 'N/A'} mph`);
+        responseLines.push(`  Speed Limit: ${interval.speedLimitMph ?? 'N/A'} mph`);
+        responseLines.push(`  Severity: ${interval.severityLevel ?? 'N/A'}`);
+        if (interval.location?.address) {
+          responseLines.push(`  Location: ${interval.location.address}`);
+        }
+        responseLines.push('');
+      }
+
+      if (result.severe.length > 3) {
+        responseLines.push(`... and ${result.severe.length - 3} more severe interval(s)`);
+      }
+    } else {
+      responseLines.push(`⚠️ No severe speeding intervals found in this window.`);
+      responseLines.push('');
+      responseLines.push(`Check logs for window expansion details.`);
+    }
+
+    const response = responseLines.join('\n');
+    await ctx.reply(response, { parse_mode: undefined });
+  } catch (err: any) {
+    const errorMsg = err.response?.data || err.message || 'Unknown error';
+    await ctx.reply(
+      `❌ Error testing speeding intervals: ${errorMsg}`,
+      { parse_mode: undefined }
+    );
+  }
+});
+
 // ================== PTI REMINDERS (06:00 и 16:00 NY) ==================
 
 async function sendDailyPtiReminders() {
