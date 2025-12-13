@@ -445,57 +445,61 @@ https://www.google.com/maps?q=${lat},${lon}`;
 /**
  * Format severe speeding message (plain text, no Markdown).
  * 
+ * Uses the final design template with proper formatting.
+ * 
  * @param event - UnifiedEvent of type severe_speeding
- * @param vehicleName - Vehicle name (from mapping or assetId)
- * @returns Plain text message
+ * @param vehicleName - Vehicle name (from mapping or assetId, e.g., "Truck 704")
+ * @returns Plain text message formatted according to the design spec
  */
 function formatSevereSpeedingMessage(
   event: UnifiedEvent,
   vehicleName: string
 ): string {
-  const maxSpeedMph = event.details?.maxSpeedMph ?? 0;
-  const speedLimitMph = event.details?.speedLimitMph ?? 0;
-  const deltaMph = maxSpeedMph - speedLimitMph;
-  const deltaSign = deltaMph >= 0 ? '+' : '';
+  // Extract truck number from vehicleName (e.g., "Truck 704" -> "704")
+  const truckNumber = vehicleName.replace(/^Truck\s+/i, '').trim() || vehicleName;
 
-  // Calculate duration
-  let durationStr = 'N/A';
-  if (event.occurredAt && event.endedAt) {
-    const start = new Date(event.occurredAt);
-    const end = new Date(event.endedAt);
-    const durationMs = end.getTime() - start.getTime();
-    const minutes = Math.floor(durationMs / 60000);
-    const seconds = Math.floor((durationMs % 60000) / 1000);
-    durationStr = `${minutes}m ${seconds}s`;
-  }
+  // Get speed data
+  const speedLimitMph = Math.round(event.details?.speedLimitMph ?? 0);
+  const actualSpeedMph = Math.round(event.details?.maxSpeedMph ?? 0);
+  const overLimit = actualSpeedMph - speedLimitMph;
 
-  // Format time (America/New_York)
-  const timeLocal = formatLocalTime(event.occurredAt);
+  // Format date: "Dec 13, 2025"
   const date = new Date(event.occurredAt);
-  const timeStr = date.toLocaleString('en-US', {
+  const dateLabel = date.toLocaleString('en-US', {
     timeZone: 'America/New_York',
     month: 'short',
     day: 'numeric',
+    year: 'numeric',
+  });
+
+  // Format detected time: "10:15 AM"
+  const detectedAt = new Date(); // Current time (when bot detected it)
+  const detectedAtLabel = detectedAt.toLocaleString('en-US', {
+    timeZone: 'America/New_York',
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
-  }) + ' ET';
+  });
 
-  // Get location
-  const location = event.details?.location?.address || null;
+  // Get location (fallback to "N/A" if not available)
+  const location = event.details?.location?.address || 'N/A';
 
-  // Build message (plain text, no Markdown)
-  let message = `🚨 SEVERE SPEEDING\n`;
-  message += `Truck: ${vehicleName}\n`;
-  message += `${maxSpeedMph.toFixed(1)} mph in ${speedLimitMph.toFixed(1)} mph (${deltaSign}${deltaMph.toFixed(1)})\n`;
-  message += `Duration: ${durationStr}\n`;
-  message += `Time: ${timeStr}`;
+  // Build message according to design spec (plain text, no Markdown)
+  return `🟥 SEVERE SPEEDING ALERT
 
-  if (location) {
-    message += `\nLocation: ${location}`;
-  }
+🚛 Truck: ${truckNumber}
 
-  return message;
+📍 Location: ${location}
+
+⏱ Time:
+${dateLabel}
+
+⚠️ Speed:
+Speed limit: ${speedLimitMph} mph
+Actual speed: ${actualSpeedMph} mph
+Over limit: +${overLimit} mph
+
+⏰ Detected by bot: ${detectedAtLabel}`;
 }
 
 /**
