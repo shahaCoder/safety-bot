@@ -886,73 +886,32 @@ async function checkAndNotifySafetyEvents() {
     `[SAMSARA][SPEEDING] windowStart=${speedingResult.windowStart} windowEnd=${speedingResult.windowEnd}`
   );
 
-  // Normalize both into unified events
-  const normalizedSafety = normalizeSafetyEvents(safetyEvents);
-  const normalizedSpeeding = normalizeSpeedingIntervals(speedingIntervals);
+  // ==================== PROCESS SAFETY EVENTS (same as /safety_test) ====================
+  // Use the same mechanism as /safety_test: process SafetyEvent directly via sendSafetyAlertWithVideo()
+  // This ensures 100% identical behavior and reliable video extraction
+  
+  const relevantSafetyEvents = safetyEvents.filter(isRelevantEvent);
+  console.log(`✅ Relevant safety events after filter: ${relevantSafetyEvents.length}`);
 
-  // Merge and deduplicate
-  const allEvents = mergeAndDedupeEvents([
-    ...normalizedSafety,
-    ...normalizedSpeeding,
-  ]);
-
-  console.log(
-    `📊 Total unified events after merge/dedup: ${allEvents.length} (safety: ${normalizedSafety.length}, speeding: ${normalizedSpeeding.length})`
-  );
-
-  if (!allEvents.length) {
-    console.log('No events from API in this window');
-    return;
-  }
-
-  // Filter for relevant events (includes severe_speeding)
-  const relevant = allEvents.filter(isRelevantUnifiedEvent);
-  console.log(`✅ Relevant events after filter: ${relevant.length}`);
-
-  if (!relevant.length) {
-    console.log('No relevant events in whitelist');
-    return;
-  }
-
-  // Process each relevant event
-  for (const event of relevant) {
-    // Check deduplication: skip if already sent
-    const alreadySent = await isEventSent(event.id);
-    if (alreadySent) {
-      console.log(`↩️ Skipping ${event.id} — already sent`);
+  for (const ev of relevantSafetyEvents) {
+    // Check if already processed (deduplication)
+    const alreadyProcessed = await isEventProcessed(ev.id);
+    if (alreadyProcessed) {
+      console.log(`↩️ Skipping safety event ${ev.id} — already processed`);
       continue;
     }
 
-    // Also check if already processed (for safety events)
-    const alreadyProcessed = await isEventProcessed(event.id);
-    if (alreadyProcessed && event.source === 'safety') {
-      console.log(`↩️ Skipping ${event.id} — already processed`);
-      continue;
-    }
-
-    // Get vehicle name: try vehicleName field, then assetId lookup, then assetId as fallback
-    let vehicleName = event.vehicleName;
-    if (!vehicleName && event.assetId) {
-      vehicleName = getVehicleNameById(event.assetId) || event.assetId;
-    }
-    if (!vehicleName) {
-      vehicleName = 'Unknown';
-    }
+    const vehicleName = ev.vehicle?.name ?? 'Unknown';
 
     // Find chat by vehicle name
     const chat = await findChatByVehicleName(vehicleName);
 
     if (!chat) {
       console.log(`❓ No chat mapping for vehicle ${vehicleName}`);
-      // Log event even if no chat found (sentToChatId will be null)
-      const behavior =
-        event.type === 'severe_speeding'
-          ? 'Severe Speeding'
-          : event.details?.behaviorLabels
-            ?.map((l: any) => l.name || l.label)
-            .join(', ') || 'Unknown';
-      const timeLocal = convertToNewYorkTime(event.occurredAt);
-      await logUnifiedEvent(event, null, behavior, event.videoUrl || null, timeLocal);
+      // Log event even if no chat found
+      const behavior = ev.behaviorLabels?.map((l) => l.name || l.label).join(', ') || 'Unknown';
+      const timeLocal = ev.time ? new Date(ev.time) : new Date();
+      await logSafetyEvent(ev, null, behavior, null, timeLocal);
       continue;
     }
 
@@ -971,124 +930,138 @@ async function checkAndNotifySafetyEvents() {
       mentionText = `[Driver](tg://user?id=${chatWithDriver.driverTgUserId})`;
     }
 
-    // Build behavior string for logging
-    const behavior =
-      event.type === 'severe_speeding'
-        ? 'Severe Speeding'
-        : event.details?.behaviorLabels
-          ?.map((l: any) => l.name || l.label)
-          .join(', ') || 'Unknown';
+    // Build caption using same logic as /safety_test
+    const { caption } = buildSafetyPayload(ev);
+    const finalCaption = mentionText ? `${mentionText}\n\n${caption}` : caption;
 
-    // Convert time to Date object for database
-    const timeLocal = convertToNewYorkTime(event.occurredAt);
-
-    // MEDIA LOOKUP: For safety events without video, try to fetch it via lookup
-    // This implements the enterprise integration pattern: if media is missing in feed,
-    // perform a lookup query to find it (same as Samsara UI does)
-    // 
-    // Lookup is performed if:
-    // - Event is from safety source (not speeding)
-    // - No videoUrl is present in the unified event
-    // - We have assetId and occurredAt to perform the lookup
-    if (
-      event.source === 'safety' &&
-      !event.videoUrl &&
-      event.assetId &&
-      event.occurredAt
-    ) {
-      console.log(
-        `[MEDIA_LOOKUP] eventId=${event.id} - No video in feed, attempting lookup...`
+    // Use sendSafetyAlertWithVideo() - same as /safety_test
+    // This function extracts video URL directly from SafetyEvent fields and handles fallbacks
+    try {
+      const result = await sendSafetyAlertWithVideo(
+        ev,
+        chatId,
+        finalCaption,
+        false // Not a dry run
       );
 
-      try {
-        const mediaResult = await fetchSafetyEventMedia({
-          id: event.id,
-          vehicle: { id: event.assetId },
-          time: event.occurredAt,
-          occurredAt: event.occurredAt,
-        });
-
-        if (mediaResult.videoUrl) {
-          event.videoUrl = mediaResult.videoUrl;
-          console.log(
-            `[MEDIA_LOOKUP] eventId=${event.id} - Video found via lookup, updated event.videoUrl`
-          );
-        } else {
-          console.log(
-            `[MEDIA_LOOKUP] eventId=${event.id} - No video found via lookup`
-          );
-        }
-      } catch (lookupErr: any) {
-        console.error(
-          `[MEDIA_LOOKUP] eventId=${event.id} - Lookup failed:`,
-          lookupErr.message
-        );
-        // Continue without video (fallback to text)
-      }
-    }
-
-    // Send message based on event type
-    try {
-      if (event.type === 'severe_speeding') {
-        // Severe speeding: use plain text format (no Markdown)
-        const message = formatSevereSpeedingMessage(event, vehicleName);
-        const finalMessage = mentionText ? `${mentionText}\n\n${message}` : message;
-
-        await bot.telegram.sendMessage(chatId, finalMessage, {
-          parse_mode: undefined, // Plain text
-        });
+      if (result.success) {
+        // Log event to database
+        const behavior = ev.behaviorLabels?.map((l) => l.name || l.label).join(', ') || 'Unknown';
+        const timeLocal = ev.time ? new Date(ev.time) : new Date();
+        const videoUrl = result.videoUrl || null;
+        await logSafetyEvent(ev, chatId, behavior, videoUrl, timeLocal);
+        
         console.log(
-          `✅ Sent severe speeding event ${event.id} to ${chat.name} (chatId=${chatId})`
-        );
-
-        // Mark as sent (dedup)
-        await markEventSent(event.id, event.type);
-      } else if (event.videoUrl) {
-        // Safety event with video
-        const caption = formatUnifiedEventCaption(event);
-        const finalCaption = mentionText ? `${mentionText}\n\n${caption}` : caption;
-
-        await bot.telegram.sendVideo(chatId, event.videoUrl, {
-          caption: finalCaption,
-          parse_mode: 'Markdown',
-        });
-        console.log(
-          `✅ Sent event ${event.id} with video to ${chat.name} (chatId=${chatId})`
+          `✅ Sent safety event ${ev.id} to ${chat.name} (chatId=${chatId})${result.videoUrl ? ' with video' : ' (text only)'}`
         );
       } else {
-        // Safety event without video
-        const caption = formatUnifiedEventCaption(event);
-        const finalCaption = mentionText ? `${mentionText}\n\n${caption}` : caption;
-
-        await bot.telegram.sendMessage(chatId, finalCaption, {
-          parse_mode: 'Markdown',
-        });
-        console.log(
-          `✅ Sent event ${event.id} (text only) to ${chat.name} (chatId=${chatId})`
+        console.error(
+          `❌ Failed to send safety event ${ev.id} to ${chat.name} (chatId=${chatId}): ${result.error || 'Unknown error'}`
         );
+        // Still log the event even if sending failed
+        const behavior = ev.behaviorLabels?.map((l) => l.name || l.label).join(', ') || 'Unknown';
+        const timeLocal = ev.time ? new Date(ev.time) : new Date();
+        await logSafetyEvent(ev, chatId, behavior, null, timeLocal);
       }
-
-      // Log event to database (always log, even if sending failed)
-      await logUnifiedEvent(
-        event,
-        chatId,
-        behavior,
-        event.videoUrl || null,
-        timeLocal
-      );
     } catch (err: any) {
       const errorMsg = err.response?.description || err.message || 'Unknown error';
       console.error(
-        `❌ Failed to send event ${event.id} to ${chat.name} (chatId=${chatId}): ${errorMsg}`
+        `❌ Error sending safety event ${ev.id} to ${chat.name} (chatId=${chatId}): ${errorMsg}`
       );
       // Still log the event even if sending failed
-      await logUnifiedEvent(
-        event,
-        chatId,
-        behavior,
-        event.videoUrl || null,
-        timeLocal
+      const behavior = ev.behaviorLabels?.map((l) => l.name || l.label).join(', ') || 'Unknown';
+      const timeLocal = ev.time ? new Date(ev.time) : new Date();
+      await logSafetyEvent(ev, chatId, behavior, null, timeLocal);
+    }
+  }
+
+  // ==================== PROCESS SPEEDING INTERVALS (via UnifiedEvent) ====================
+  // Speeding intervals continue to use UnifiedEvent pipeline (unchanged)
+  
+  if (speedingIntervals.length === 0) {
+    return; // No speeding intervals to process
+  }
+
+  // Normalize speeding intervals into unified events
+  const normalizedSpeeding = normalizeSpeedingIntervals(speedingIntervals);
+
+  console.log(
+    `📊 Processing ${normalizedSpeeding.length} severe speeding intervals`
+  );
+
+  // Process each severe speeding interval
+  for (const event of normalizedSpeeding) {
+    // Check deduplication: skip if already sent
+    const alreadySent = await isEventSent(event.id);
+    if (alreadySent) {
+      console.log(`↩️ Skipping speeding interval ${event.id} — already sent`);
+      continue;
+    }
+
+    // Get vehicle name: try vehicleName field, then assetId lookup, then assetId as fallback
+    let vehicleName = event.vehicleName;
+    if (!vehicleName && event.assetId) {
+      vehicleName = getVehicleNameById(event.assetId) || event.assetId;
+    }
+    if (!vehicleName) {
+      vehicleName = 'Unknown';
+    }
+
+    // Find chat by vehicle name
+    const chat = await findChatByVehicleName(vehicleName);
+
+    if (!chat) {
+      console.log(`❓ No chat mapping for vehicle ${vehicleName}`);
+      // Log event even if no chat found
+      const behavior = 'Severe Speeding';
+      const timeLocal = convertToNewYorkTime(event.occurredAt);
+      await logUnifiedEvent(event, null, behavior, null, timeLocal);
+      continue;
+    }
+
+    const chatId = Number(chat.telegramChatId);
+
+    // Build driver mention if driver is set
+    const chatWithDriver = chat as Chat & {
+      driverTgUserId?: bigint | null;
+      driverUsername?: string | null;
+    };
+
+    let mentionText = '';
+    if (chatWithDriver.driverUsername) {
+      mentionText = `@${chatWithDriver.driverUsername}`;
+    } else if (chatWithDriver.driverTgUserId) {
+      mentionText = `[Driver](tg://user?id=${chatWithDriver.driverTgUserId})`;
+    }
+
+    // Send severe speeding message (plain text format)
+    try {
+      const message = formatSevereSpeedingMessage(event, vehicleName);
+      const finalMessage = mentionText ? `${mentionText}\n\n${message}` : message;
+
+      await bot.telegram.sendMessage(chatId, finalMessage, {
+        parse_mode: undefined, // Plain text
+      });
+      console.log(
+        `✅ Sent severe speeding event ${event.id} to ${chat.name} (chatId=${chatId})`
       );
+
+      // Mark as sent (dedup)
+      await markEventSent(event.id, event.type);
+
+      // Log event to database
+      const behavior = 'Severe Speeding';
+      const timeLocal = convertToNewYorkTime(event.occurredAt);
+      await logUnifiedEvent(event, chatId, behavior, null, timeLocal);
+    } catch (err: any) {
+      const errorMsg = err.response?.description || err.message || 'Unknown error';
+      console.error(
+        `❌ Failed to send speeding event ${event.id} to ${chat.name} (chatId=${chatId}): ${errorMsg}`
+      );
+      // Still log the event even if sending failed
+      const behavior = 'Severe Speeding';
+      const timeLocal = convertToNewYorkTime(event.occurredAt);
+      await logUnifiedEvent(event, chatId, behavior, null, timeLocal);
     }
   }
 }

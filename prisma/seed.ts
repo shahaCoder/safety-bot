@@ -56,9 +56,9 @@ interface DriverSeedData {
     },
     {
       id: 7,
-      name: 'PTI TEST UZ',
+      name: 'PTI TEST EN',
       chatId: -1003214745822,
-      language: 'uz',
+      language: 'en',
       trucks: ['Truck 195'],
     },
     {
@@ -250,4 +250,3 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
   });
-
