@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { getAllVehicleAssetIds } from './samsaraVehicles';
+import { isEventSent, markEventSent } from '../repository';
 
 /**
  * Speeding interval from Samsara API.
@@ -350,6 +351,145 @@ export async function fetchSpeedingIntervals(
   return {
     total: allFlattenedIntervals.length,
     severe: severeIntervals,
+  };
+}
+
+/**
+ * Generate dedup key for a speeding interval.
+ * Format: ${assetId}:${startTime}:${endTime}
+ * 
+ * @param interval - Speeding interval
+ * @returns Dedup key string
+ */
+function getSpeedingIntervalDedupKey(interval: SpeedingInterval): string {
+  return `${interval.assetId}:${interval.startTime}:${interval.endTime}`;
+}
+
+/**
+ * Fetch severe speeding intervals using Samsara-recommended sliding window strategy.
+ * 
+ * Strategy:
+ * - Uses a sliding window: windowHours (default 6) + bufferMinutes (default 10)
+ * - startTime = now - windowHours - bufferMinutes
+ * - endTime = now + 1 minute (to avoid edge misses)
+ * - Deduplicates using key: ${assetId}:${startTime}:${endTime}
+ * - Returns only new severe intervals (not already sent)
+ * 
+ * @param opts - Options with optional asset IDs
+ * @returns Object with total intervals count, severe intervals count, and new severe intervals to post
+ */
+export async function fetchSpeedingIntervalsWithSlidingWindow(
+  opts: { assetIds?: string[] } = {}
+): Promise<{ 
+  total: number; 
+  severe: number; 
+  newToPost: SpeedingInterval[];
+  windowStart: string;
+  windowEnd: string;
+}> {
+  const token = process.env.SAM_SARA_API_TOKEN;
+
+  if (!token) {
+    console.error('❌ SAM_SARA_API_TOKEN is missing in .env');
+    return { total: 0, severe: 0, newToPost: [], windowStart: '', windowEnd: '' };
+  }
+
+  // Configuration from env vars
+  const windowHours = parseInt(process.env.SPEEDING_WINDOW_HOURS || '6', 10);
+  const bufferMinutes = parseInt(process.env.SPEEDING_BUFFER_MINUTES || '10', 10);
+
+  // Calculate sliding window
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - (windowHours * 60 + bufferMinutes) * 60 * 1000);
+  const windowEnd = new Date(now.getTime() + 1 * 60 * 1000); // +1 minute to avoid edge misses
+
+  const window: Window = {
+    startTime: windowStart.toISOString(),
+    endTime: windowEnd.toISOString(),
+  };
+
+  // Resolve asset IDs
+  let assetIds = opts.assetIds;
+  const useEnvOverride = !!process.env.SAMSARA_ASSET_IDS;
+  
+  if (!assetIds || assetIds.length === 0) {
+    assetIds = await getAllVehicleAssetIds();
+  }
+
+  if (assetIds.length === 0) {
+    console.warn('[SAMSARA][SPEEDING] No asset IDs available for speeding intervals fetch');
+    return { total: 0, severe: 0, newToPost: [], windowStart: window.startTime, windowEnd: window.endTime };
+  }
+
+  console.log(
+    `[SAMSARA][SPEEDING] windowStart=${window.startTime} windowEnd=${window.endTime} (windowHours=${windowHours}, bufferMinutes=${bufferMinutes})`
+  );
+
+  // Chunking configuration
+  const CHUNK_SIZE = 200;
+  const chunks: string[][] = [];
+  for (let i = 0; i < assetIds.length; i += CHUNK_SIZE) {
+    chunks.push(assetIds.slice(i, i + CHUNK_SIZE));
+  }
+
+  const allFlattenedIntervals: SpeedingInterval[] = [];
+  const severeIntervals: SpeedingInterval[] = [];
+
+  // Process each chunk
+  for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
+    const chunk = chunks[chunkIdx];
+    
+    try {
+      const result = await fetchSpeedingIntervalsForWindow(
+        token,
+        window,
+        chunk,
+        chunkIdx + 1,
+        chunks.length
+      );
+
+      // Add all intervals
+      for (const interval of result.intervals) {
+        allFlattenedIntervals.push(interval);
+
+        // Filter for severe
+        const severityLevel = (interval.severityLevel || '').toLowerCase().trim();
+        if (severityLevel === 'severe') {
+          severeIntervals.push(interval);
+        }
+      }
+    } catch (err: any) {
+      console.error(
+        `[SAMSARA][SPEEDING] Error fetching chunk ${chunkIdx + 1}/${chunks.length}:`,
+        err.response?.data || err.message
+      );
+      // Continue with next chunk
+    }
+  }
+
+  // Deduplicate: check which severe intervals are new (not already sent)
+  const newToPost: SpeedingInterval[] = [];
+  for (const interval of severeIntervals) {
+    const dedupKey = getSpeedingIntervalDedupKey(interval);
+    // Use the same format as normalizeSpeedingInterval for consistency
+    const eventId = `speeding:${dedupKey}`;
+    
+    const alreadySent = await isEventSent(eventId);
+    if (!alreadySent) {
+      newToPost.push(interval);
+    }
+  }
+
+  console.log(
+    `[SAMSARA][SPEEDING] totalIntervals=${allFlattenedIntervals.length} severe=${severeIntervals.length} newToPost=${newToPost.length}`
+  );
+
+  return {
+    total: allFlattenedIntervals.length,
+    severe: severeIntervals.length,
+    newToPost,
+    windowStart: window.startTime,
+    windowEnd: window.endTime,
   };
 }
 

@@ -408,6 +408,37 @@ export async function markEventSent(
   }
 }
 
+/**
+ * Clean up old sent events (dedup keys) older than specified days.
+ * Used to prevent unbounded growth of the sent_events table.
+ * 
+ * @param daysOld - Delete events older than this many days (default: 7)
+ * @returns Number of deleted events
+ */
+export async function cleanupOldSentEvents(daysOld: number = 7): Promise<number> {
+  try {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - daysOld);
+
+    const result = await prisma.sentEvent.deleteMany({
+      where: {
+        sentAt: {
+          lt: cutoffDate,
+        },
+      },
+    });
+
+    if (result.count > 0) {
+      console.log(`🧹 Cleaned up ${result.count} old sent events (older than ${daysOld} days)`);
+    }
+
+    return result.count;
+  } catch (error) {
+    console.error(`❌ Error cleaning up old sent events:`, error);
+    return 0;
+  }
+}
+
 // Export Prisma client for direct use if needed
 export { prisma };
 

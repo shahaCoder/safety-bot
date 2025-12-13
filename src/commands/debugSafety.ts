@@ -1,6 +1,6 @@
 import { Context } from 'telegraf';
 import { getSafetyEventsInWindow, SafetyEvent } from '../samsara';
-import { fetchSpeedingIntervals, SpeedingInterval } from '../services/samsaraSpeeding';
+import { fetchSpeedingIntervals, fetchSpeedingIntervalsWithSlidingWindow, SpeedingInterval } from '../services/samsaraSpeeding';
 import { getAllVehicleAssetIds } from '../services/samsaraVehicles';
 import {
   normalizeSafetyEvents,
@@ -233,7 +233,7 @@ export async function handleDebugSafety(ctx: Context): Promise<void> {
 
   await ctx.reply(`🔍 Fetching events for last ${hours} hours...`);
 
-  // Calculate time window
+  // Calculate time window for safety events
   const now = new Date();
   const from = new Date(now.getTime() - hours * 60 * 60 * 1000);
 
@@ -242,18 +242,26 @@ export async function handleDebugSafety(ctx: Context): Promise<void> {
   const useEnvOverride = !!process.env.SAMSARA_ASSET_IDS;
   const mode = useEnvOverride ? 'env override' : 'auto-fetched';
 
+  // Get speeding window configuration
+  const windowHours = parseInt(process.env.SPEEDING_WINDOW_HOURS || '6', 10);
+  const bufferMinutes = parseInt(process.env.SPEEDING_BUFFER_MINUTES || '10', 10);
+  const speedingWindowHours = Math.max(hours, windowHours);
+
   // Fetch both safety events and speeding intervals (DO NOT write to DB, DO NOT send to groups)
+  // Safety: uses explicit window (last N hours)
+  // Speeding: uses sliding window strategy (max(N, windowHours) + buffer)
   const [safetyEvents, speedingResult] = await Promise.all([
     getSafetyEventsInWindow({ from, to: now }, 200),
-    fetchSpeedingIntervals({ from, to: now }),
+    fetchSpeedingIntervalsWithSlidingWindow(),
   ]);
 
-  const speedingIntervals = speedingResult.severe;
+  const speedingIntervals = speedingResult.newToPost; // Use newToPost to see what would be posted
   const totalSpeedingIntervals = speedingResult.total;
+  const severeSpeedingTotal = speedingResult.severe; // Total severe (including already sent)
 
   // Log diagnostic info
   console.log(
-    `[DEBUG_SAFETY] Fetched ${safetyEvents.length} safety events and ${totalSpeedingIntervals} speeding intervals (${speedingIntervals.length} severe) for ${hours} hours`
+    `[DEBUG_SAFETY] Fetched ${safetyEvents.length} safety events and ${totalSpeedingIntervals} speeding intervals (${severeSpeedingTotal} severe total, ${speedingIntervals.length} new to post) for ${hours} hours`
   );
 
   // Normalize both
@@ -268,7 +276,7 @@ export async function handleDebugSafety(ctx: Context): Promise<void> {
 
   // Analyze
   const totalSafetyEvents = safetyEvents.length;
-  const severeSpeedingCount = speedingIntervals.length;
+  const severeSpeedingNewCount = speedingIntervals.length;
   const topTypes = getTopUnifiedEventTypes(allUnifiedEvents, 5);
   const exampleSevereSpeeding =
     speedingIntervals.length > 0 ? speedingIntervals[0] : null;
@@ -277,13 +285,17 @@ export async function handleDebugSafety(ctx: Context): Promise<void> {
   const responseLines: string[] = [];
 
   responseLines.push(`📊 Safety Events Diagnostics`);
-  responseLines.push(`Time Window: Last ${hours} hours`);
+  responseLines.push('');
+  responseLines.push(`Windows:`);
+  responseLines.push(`  Safety window: last ${hours} hours (${from.toISOString()} to ${now.toISOString()})`);
+  responseLines.push(`  Speeding window: ${speedingWindowHours}h + ${bufferMinutes}m buffer (${speedingResult.windowStart} to ${speedingResult.windowEnd})`);
   responseLines.push('');
   responseLines.push(`Vehicles count: ${vehicleAssetIds.length} (mode: ${mode})`);
   responseLines.push(`Safety Events (raw): ${totalSafetyEvents}`);
   responseLines.push(`Safety Events (normalized): ${normalizedSafety.length}`);
   responseLines.push(`Speeding intervals (total): ${totalSpeedingIntervals}`);
-  responseLines.push(`Severe speeding count: ${severeSpeedingCount}`);
+  responseLines.push(`Speeding intervals (severe total): ${severeSpeedingTotal}`);
+  responseLines.push(`Speeding intervals (new to post): ${severeSpeedingNewCount}`);
   responseLines.push('');
 
   if (topTypes.length > 0) {

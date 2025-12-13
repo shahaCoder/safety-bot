@@ -33,10 +33,11 @@ import {
   updateChatMentionTemplate,
   setChatDriver,
   clearChatDriver,
+  cleanupOldSentEvents,
 } from './repository';
 import { requireAdminPrivateChat } from './guards/isAdmin';
 import { handleDebugSafety } from './commands/debugSafety';
-import { fetchSpeedingIntervals } from './services/samsaraSpeeding';
+import { fetchSpeedingIntervals, fetchSpeedingIntervalsWithSlidingWindow } from './services/samsaraSpeeding';
 import { getAllVehicleAssetIds, getVehicleNameById } from './services/samsaraVehicles';
 import {
   normalizeSafetyEvents,
@@ -856,24 +857,29 @@ async function checkAndNotifySafetyEvents() {
     `🚨 Checking Samsara events (last ${SAFETY_LOOKBACK_MINUTES} min)...`,
   );
 
-  // Calculate time window
+  // Calculate time window for safety events (60 minutes)
   const now = new Date();
   const from = new Date(now.getTime() - SAFETY_LOOKBACK_MINUTES * 60 * 1000);
 
-  // Fetch both safety events and speeding intervals
+  // Fetch safety events (60-minute window) and speeding intervals (sliding window with 6h+buffer)
+  // Speeding uses Samsara-recommended sliding window strategy, separate from safety events
   const [safetyEvents, speedingResult] = await Promise.all([
     getSafetyEventsInWindow({ from, to: now }, 200),
-    fetchSpeedingIntervals({ from, to: now }),
+    fetchSpeedingIntervalsWithSlidingWindow(),
   ]);
 
-  const speedingIntervals = speedingResult.severe;
+  // Extract new severe speeding intervals (already deduplicated)
+  const speedingIntervals = speedingResult.newToPost;
   const totalSpeedingIntervals = speedingResult.total;
+  const severeSpeedingCount = speedingResult.severe;
 
   // Log counts per source
-  const severeSpeedingCount = speedingIntervals.length;
-  console.log(`[SAMSARA] safety events: ${safetyEvents.length}`);
+  console.log(`[SAMSARA] safety events: ${safetyEvents.length} (window: last ${SAFETY_LOOKBACK_MINUTES} min)`);
   console.log(
-    `[SAMSARA] speeding intervals: ${totalSpeedingIntervals} (total), ${severeSpeedingCount} (severe)`
+    `[SAMSARA] speeding intervals: ${totalSpeedingIntervals} (total), ${severeSpeedingCount} (severe), ${speedingIntervals.length} (new to post)`
+  );
+  console.log(
+    `[SAMSARA][SPEEDING] windowStart=${speedingResult.windowStart} windowEnd=${speedingResult.windowEnd}`
   );
 
   // Normalize both into unified events
@@ -1293,6 +1299,12 @@ cron.schedule('* * * * *', async () => {
   console.log('⏰ [CRON SAFETY] tick');
   try {
     await checkAndNotifySafetyEvents();
+    
+    // Cleanup old sent events once per hour (at minute 0)
+    const now = new Date();
+    if (now.getMinutes() === 0) {
+      await cleanupOldSentEvents(7); // Keep 7 days of dedup keys
+    }
   } catch (err) {
     console.error('❌ Error in cron safety check', err);
   }
