@@ -1246,11 +1246,12 @@ async function sendDailyPtiReminders() {
   }
 }
 
-// 06:00 America/New_York (6 AM)
+// 06:00 America/New_York (6 AM) - Monday to Friday only
+// Cron day of week: 0=Sunday, 1=Monday, ..., 6=Saturday
 cron.schedule(
-  '0 6 * * *',
+  '0 6 * * 1-5', // Monday (1) to Friday (5) at 6 AM
   async () => {
-    console.log('⏰ [CRON PTI] 06:00 tick');
+    console.log('⏰ [CRON PTI] 06:00 tick (Monday-Friday)');
     await sendDailyPtiReminders();
   },
   {
@@ -1258,11 +1259,15 @@ cron.schedule(
   },
 );
 
-// 16:00 America/New_York (4 PM)
+// 16:00 America/New_York (4 PM) - Monday to Saturday
+// Monday-Friday: regular reminder, Saturday: only reminder of the day
 cron.schedule(
-  '0 16 * * *',
+  '0 16 * * 1-6', // Monday (1) to Saturday (6) at 4 PM
   async () => {
-    console.log('⏰ [CRON PTI] 16:00 tick');
+    const now = new Date();
+    const dayOfWeek = now.getDay(); // 0=Sunday, 1=Monday, ..., 6=Saturday
+    const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dayOfWeek];
+    console.log(`⏰ [CRON PTI] 16:00 tick (${dayName})`);
     await sendDailyPtiReminders();
   },
   {
