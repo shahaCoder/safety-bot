@@ -176,6 +176,13 @@ export async function isEventProcessed(eventId: string): Promise<boolean> {
 export async function getAllChats(): Promise<Chat[]> {
   try {
     return await prisma.chat.findMany({
+      include: {
+        trucks: {
+          orderBy: {
+            name: 'asc',
+          },
+        },
+      },
       orderBy: {
         id: 'asc',
       },
@@ -183,6 +190,66 @@ export async function getAllChats(): Promise<Chat[]> {
   } catch (error) {
     console.error('❌ Error fetching all chats:', error);
     return [];
+  }
+}
+
+/**
+ * Update truckNames field for a chat based on its associated trucks.
+ * This makes it easier to see truck numbers in Prisma Studio.
+ * 
+ * @param chatId - Chat ID
+ * @returns Updated Chat or null if not found
+ */
+export async function updateChatTruckNames(chatId: number): Promise<Chat | null> {
+  try {
+    const chat = await prisma.chat.findUnique({
+      where: { id: chatId },
+      include: { trucks: true },
+    });
+
+    if (!chat) {
+      return null;
+    }
+
+    const truckNames = chat.trucks
+      .map((t) => t.name)
+      .sort()
+      .join(', ') || null;
+
+    return await prisma.chat.update({
+      where: { id: chatId },
+      data: { truckNames },
+    });
+  } catch (error) {
+    console.error(`❌ Error updating truckNames for chat ${chatId}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Update truckNames for all chats (useful after bulk truck updates).
+ */
+export async function updateAllChatTruckNames(): Promise<void> {
+  try {
+    const chats = await prisma.chat.findMany({
+      include: { trucks: true },
+    });
+
+    for (const chat of chats) {
+      const truckNames = chat.trucks
+        .map((t) => t.name)
+        .sort()
+        .join(', ') || null;
+
+      await prisma.chat.update({
+        where: { id: chat.id },
+        data: { truckNames },
+      });
+    }
+
+    console.log(`✅ Updated truckNames for ${chats.length} chats`);
+  } catch (error) {
+    console.error('❌ Error updating all chat truckNames:', error);
   }
 }
 

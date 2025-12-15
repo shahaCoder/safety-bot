@@ -29,6 +29,7 @@ model Chat {
   driverLastName  String?        // Driver's last name
   driverUsername  String?       // Driver's username (if available)
   lastPtiDate     DateTime?     @map("last_pti_date") // Date (NY timezone) when PTI was last completed - used to skip 16:00 reminder if done today
+  truckNames      String?        @map("truck_names") // Comma-separated list of truck names (e.g., "Truck 704, Truck 711") - for display in Prisma Studio
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 

@@ -36,6 +36,7 @@ import {
   cleanupOldSentEvents,
   isPtiCompletedToday,
   markPtiCompleted,
+  updateAllChatTruckNames,
 } from './repository';
 import { requireAdminPrivateChat } from './guards/isAdmin';
 import { handleDebugSafety } from './commands/debugSafety';
@@ -128,6 +129,22 @@ bot.command('mark_pti_done', requireAdminPrivateChat, async (ctx) => {
     );
   } catch (err: any) {
     console.error('❌ Error marking PTI completed:', err);
+    await ctx.reply(`❌ Error: ${err.message || 'Unknown error'}`);
+  }
+});
+
+// ================== /update_truck_names (ADMIN) ==================
+/**
+ * Admin command to update truckNames field for all chats.
+ * Usage: /update_truck_names
+ * Updates the truckNames field based on associated trucks (for Prisma Studio display).
+ */
+bot.command('update_truck_names', requireAdminPrivateChat, async (ctx) => {
+  try {
+    await updateAllChatTruckNames();
+    await ctx.reply('✅ Updated truckNames for all chats. Check Prisma Studio to see the changes.');
+  } catch (err: any) {
+    console.error('❌ Error updating truckNames:', err);
     await ctx.reply(`❌ Error: ${err.message || 'Unknown error'}`);
   }
 });
@@ -1428,8 +1445,10 @@ cron.schedule('* * * * *', async () => {
 
 // ================== СТАРТ БОТА ==================
 
-bot.launch().then(() => {
+bot.launch().then(async () => {
   console.log('✅ PTI bot is running...');
+  // Update truckNames for all chats on startup (so they're visible in Prisma Studio)
+  await updateAllChatTruckNames();
 });
 
 // Для корректной остановки (telegraf рекомендует)
