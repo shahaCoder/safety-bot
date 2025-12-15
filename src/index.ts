@@ -646,11 +646,14 @@ async function sendSafetyAlertWithVideo(
   event: SafetyEvent,
   chatId: number,
   caption: string,
-  dryRun: boolean = false
+  dryRun: boolean = false,
+  options?: { allowTextIfNoVideo?: boolean }
 ): Promise<{ success: boolean; videoUrl?: string; error?: string }> {
   const eventId = event.id;
   const vehicleName = event.vehicle?.name ?? 'Unknown';
   const vehicleId = event.vehicle?.id ?? 'Unknown';
+
+  const allowTextIfNoVideo = options?.allowTextIfNoVideo ?? true;
 
   // 1) Попытка взять URL из самого события (как раньше, как в /safety_test)
   // Priority: forward > inward > generic
@@ -706,8 +709,15 @@ async function sendSafetyAlertWithVideo(
     return { success: true, videoUrl };
   }
 
-  // If no video URL, just send text message
+  // If no video URL, either send text (default) or, if forbidden, возвращаемся без отправки
   if (!videoUrl) {
+    if (!allowTextIfNoVideo) {
+      console.log(
+        `⏸️ [sendSafetyAlertWithVideo] Event ${eventId} has no video and text-only is disabled (allowTextIfNoVideo=false). Skipping send for now.`,
+      );
+      return { success: false, error: 'NO_VIDEO_YET' };
+    }
+
     try {
       await bot.telegram.sendMessage(chatId, caption, {
         parse_mode: 'Markdown',
@@ -863,6 +873,10 @@ async function sendSafetyAlertWithVideo(
 // ================== ОСНОВНАЯ ЛОГИКА SAFETY-НОТИФИКАЦИЙ ==================
 
 const SAFETY_LOOKBACK_MINUTES = 60;
+// Сколько минут даём Samsara, чтобы «подвезти» видео до первой попытки отправки
+const SAFETY_MEDIA_READY_DELAY_MINUTES = 3;
+// Максимальное время ожидания видео; после этого шлём текст даже без видео
+const SAFETY_MEDIA_MAX_WAIT_MINUTES = 10;
 
 /**
  * Convert ISO date string to Date object in America/New_York timezone.
@@ -959,17 +973,49 @@ async function checkAndNotifySafetyEvents() {
     const { caption } = buildSafetyPayload(ev);
     const finalCaption = mentionText ? `${mentionText}\n\n${caption}` : caption;
 
+    const eventTimeIso = ev.time || ev.occurredAt || ev.startTime;
+    let eventAgeMinutes: number | null = null;
+    if (eventTimeIso) {
+      const eventTime = new Date(eventTimeIso);
+      eventAgeMinutes = (now.getTime() - eventTime.getTime()) / (60 * 1000);
+    }
+
+    // Если событие слишком свежее — даём время Samsara «подвезти» видео
+    if (eventAgeMinutes !== null && eventAgeMinutes < SAFETY_MEDIA_READY_DELAY_MINUTES) {
+      console.log(
+        `⏳ [SAFETY][MEDIA_WAIT] Skipping event ${ev.id} for now: age=${eventAgeMinutes.toFixed(
+          1,
+        )}min < readyDelay=${SAFETY_MEDIA_READY_DELAY_MINUTES}min`,
+      );
+      continue;
+    }
+
+    // Решаем стратегию отправки в зависимости от возраста события:
+    // - сначала ждём появления видео (готовность Samsara)
+    // - если видео так и не появилось до MEDIA_MAX_WAIT, шлём текст
+
+    const ageLabel =
+      eventAgeMinutes === null ? 'unknown' : `${eventAgeMinutes.toFixed(1)}min`;
+    const allowTextIfNoVideo =
+      eventAgeMinutes === null ||
+      eventAgeMinutes >= SAFETY_MEDIA_MAX_WAIT_MINUTES;
+
+    console.log(
+      `[SAFETY][SEND_STRATEGY] eventId=${ev.id} age=${ageLabel} allowTextIfNoVideo=${allowTextIfNoVideo}`,
+    );
+
     // Use sendSafetyAlertWithVideo() - same as /safety_test
-    // This function extracts video URL directly from SafetyEvent fields and handles fallbacks
+    // Для «молодых» событий мы можем запретить текст, если видео ещё не готово
     try {
       const result = await sendSafetyAlertWithVideo(
         ev,
         chatId,
         finalCaption,
-        false // Not a dry run
+        false, // Not a dry run
+        { allowTextIfNoVideo },
       );
 
-      if (result.success) {
+      if (result.success && (result.videoUrl || allowTextIfNoVideo)) {
         // Log event to database
         const behavior = ev.behaviorLabels?.map((l) => l.name || l.label).join(', ') || 'Unknown';
         const timeLocal = ev.time ? new Date(ev.time) : new Date();
@@ -978,6 +1024,11 @@ async function checkAndNotifySafetyEvents() {
         
         console.log(
           `✅ Sent safety event ${ev.id} to ${chat.name} (chatId=${chatId})${result.videoUrl ? ' with video' : ' (text only)'}`
+        );
+      } else if (!result.success && result.error === 'NO_VIDEO_YET' && !allowTextIfNoVideo) {
+        // Видео ещё нет, текст слать рано — не помечаем событие обработанным, ждём следующего крона
+        console.log(
+          `⏳ [SAFETY][MEDIA_WAIT] Event ${ev.id} has no video yet and text-only is disabled. Will retry in next cron run.`,
         );
       } else {
         console.error(
