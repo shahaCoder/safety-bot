@@ -28,6 +28,7 @@ model Chat {
   driverFirstName String?       // Driver's first name
   driverLastName  String?        // Driver's last name
   driverUsername  String?       // Driver's username (if available)
+  lastPtiDate     DateTime?     @map("last_pti_date") // Date (NY timezone) when PTI was last completed - used to skip 16:00 reminder if done today
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 

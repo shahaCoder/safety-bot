@@ -34,6 +34,8 @@ import {
   setChatDriver,
   clearChatDriver,
   cleanupOldSentEvents,
+  isPtiCompletedToday,
+  markPtiCompleted,
 } from './repository';
 import { requireAdminPrivateChat } from './guards/isAdmin';
 import { handleDebugSafety } from './commands/debugSafety';
@@ -86,6 +88,49 @@ async function isChatAdmin(ctx: any): Promise<boolean> {
 // They use their own guard to ensure admin + private chat only
 
 bot.command('debug_safety', requireAdminPrivateChat, handleDebugSafety);
+
+// ================== /mark_pti_done (ADMIN) ==================
+/**
+ * Admin command to mark PTI as completed for the current chat.
+ * Usage: /mark_pti_done
+ * Only works in group chats (not private).
+ */
+bot.command('mark_pti_done', requireAdminPrivateChat, async (ctx) => {
+  const chatId = ctx.chat?.id;
+  
+  if (!chatId || ctx.chat?.type === 'private') {
+    await ctx.reply('❌ This command only works in group chats.');
+    return;
+  }
+
+  try {
+    const chat = await markPtiCompleted(BigInt(chatId));
+    
+    if (!chat) {
+      await ctx.reply('❌ Chat not found in database. Please register the chat first.');
+      return;
+    }
+
+    const lastPtiDate = chat.lastPtiDate 
+      ? new Date(chat.lastPtiDate).toLocaleDateString('en-US', { 
+          timeZone: 'America/New_York',
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric'
+        })
+      : 'never';
+
+    await ctx.reply(
+      `✅ PTI marked as completed for ${chat.name}.\n` +
+      `Last PTI date: ${lastPtiDate}\n` +
+      `\n` +
+      `This chat will NOT receive the 16:00 PTI reminder today.`
+    );
+  } catch (err: any) {
+    console.error('❌ Error marking PTI completed:', err);
+    await ctx.reply(`❌ Error: ${err.message || 'Unknown error'}`);
+  }
+});
 
 // Игнорировать все личные чаты (except admin debug commands above)
 bot.use((ctx, next) => {
@@ -1268,8 +1313,9 @@ bot.command('test_speeding', requireAdminPrivateChat, async (ctx) => {
 
 // ================== PTI REMINDERS (06:00 и 16:00 NY) ==================
 
-async function sendDailyPtiReminders() {
-  console.log('📣 Sending PTI reminders to all chats...');
+async function sendDailyPtiReminders(isEvening: boolean = false) {
+  const timeLabel = isEvening ? '16:00 (evening)' : '06:00 (morning)';
+  console.log(`📣 Sending PTI reminders to all chats (${timeLabel})...`);
   const chats = await getAllChats();
 
   if (!chats.length) {
@@ -1278,6 +1324,17 @@ async function sendDailyPtiReminders() {
   }
 
   for (const chat of chats) {
+    // In evening (16:00), skip chats that already completed PTI today
+    if (isEvening) {
+      const ptiCompleted = isPtiCompletedToday(chat);
+      if (ptiCompleted) {
+        console.log(
+          `⏭️ Skipping PTI reminder for ${chat.name} (chatId=${Number(chat.telegramChatId)}) — PTI already completed today`
+        );
+        continue;
+      }
+    }
+
     // Map ChatLanguage enum to LanguageCode (already lowercase)
     const lang = chat.language as LanguageCode;
     const baseText =
@@ -1337,6 +1394,7 @@ cron.schedule(
 
 // 16:00 America/New_York (4 PM) - Monday to Saturday
 // Monday-Friday: regular reminder, Saturday: only reminder of the day
+// Skips chats that already completed PTI today
 cron.schedule(
   '0 16 * * 1-6', // Monday (1) to Saturday (6) at 4 PM
   async () => {
@@ -1344,7 +1402,7 @@ cron.schedule(
     const dayOfWeek = now.getDay(); // 0=Sunday, 1=Monday, ..., 6=Saturday
     const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dayOfWeek];
     console.log(`⏰ [CRON PTI] 16:00 tick (${dayName})`);
-    await sendDailyPtiReminders();
+    await sendDailyPtiReminders(true); // true = isEvening, will skip chats that completed PTI today
   },
   {
     timezone: 'America/New_York',

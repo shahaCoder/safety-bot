@@ -439,6 +439,74 @@ export async function cleanupOldSentEvents(daysOld: number = 7): Promise<number>
   }
 }
 
+/**
+ * Mark PTI as completed for a chat (sets lastPtiDate to today in NY timezone).
+ * 
+ * @param telegramChatId - Telegram chat ID (BigInt)
+ * @returns Updated Chat or null if not found
+ */
+export async function markPtiCompleted(telegramChatId: bigint): Promise<Chat | null> {
+  try {
+    // Get current date in America/New_York timezone (date only, no time)
+    const now = new Date();
+    const nyDate = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    // Set to start of day (00:00:00) in NY timezone
+    nyDate.setHours(0, 0, 0, 0);
+
+    const existing = await prisma.chat.findUnique({
+      where: {
+        telegramChatId,
+      },
+    });
+
+    if (!existing) {
+      console.log(
+        `⚠️ Chat not found for telegramChatId ${telegramChatId}, cannot mark PTI completed`
+      );
+      return null;
+    }
+
+    return await prisma.chat.update({
+      where: {
+        telegramChatId,
+      },
+      data: {
+        lastPtiDate: nyDate,
+      },
+    });
+  } catch (error) {
+    console.error(
+      `❌ Error marking PTI completed for chat ${telegramChatId}:`,
+      error
+    );
+    return null;
+  }
+}
+
+/**
+ * Check if PTI was completed today (in NY timezone) for a chat.
+ * 
+ * @param chat - Chat object with lastPtiDate field
+ * @returns true if PTI was completed today
+ */
+export function isPtiCompletedToday(chat: Chat & { lastPtiDate?: Date | null }): boolean {
+  if (!chat.lastPtiDate) {
+    return false;
+  }
+
+  // Get today's date in NY timezone (date only, no time)
+  const now = new Date();
+  const todayNy = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  todayNy.setHours(0, 0, 0, 0);
+
+  // Get lastPtiDate as date only (in NY timezone)
+  const lastPtiNy = new Date(chat.lastPtiDate.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  lastPtiNy.setHours(0, 0, 0, 0);
+
+  // Compare dates (ignore time)
+  return lastPtiNy.getTime() === todayNy.getTime();
+}
+
 // Export Prisma client for direct use if needed
 export { prisma };
 
