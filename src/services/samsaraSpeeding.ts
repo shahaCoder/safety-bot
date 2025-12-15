@@ -395,7 +395,8 @@ export async function fetchSpeedingIntervalsWithSlidingWindow(
   }
 
   // Configuration from env vars
-  const windowHours = parseInt(process.env.SPEEDING_WINDOW_HOURS || '6', 10);
+  // По умолчанию берём 12 часов окна, как в целевой логике
+  const windowHours = parseInt(process.env.SPEEDING_WINDOW_HOURS || '12', 10);
   const bufferMinutes = parseInt(process.env.SPEEDING_BUFFER_MINUTES || '10', 10);
 
   // Calculate sliding window
@@ -435,6 +436,15 @@ export async function fetchSpeedingIntervalsWithSlidingWindow(
   const allFlattenedIntervals: SpeedingInterval[] = [];
   const severeIntervals: SpeedingInterval[] = [];
 
+  // Порог по превышению: over = actualSpeed - speedLimit
+  // Если over >= threshold → считаем уведомлением
+  const overThresholdMph = parseFloat(
+    process.env.SPEEDING_OVER_THRESHOLD_MPH || '15',
+  );
+  console.log(
+    `[SAMSARA][SPEEDING] Using over-threshold=${overThresholdMph} mph for alerts`,
+  );
+
   // Process each chunk
   for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
     const chunk = chunks[chunkIdx];
@@ -452,10 +462,14 @@ export async function fetchSpeedingIntervalsWithSlidingWindow(
       for (const interval of result.intervals) {
         allFlattenedIntervals.push(interval);
 
-        // Filter for severe
-        const severityLevel = (interval.severityLevel || '').toLowerCase().trim();
-        if (severityLevel === 'severe') {
-          severeIntervals.push(interval);
+        // Фильтруем по нашему порогу, а не по severityLevel клиента
+        const actual = interval.maxSpeedMph;
+        const limit = interval.speedLimitMph;
+        if (actual != null && limit != null) {
+          const over = actual - limit;
+          if (over >= overThresholdMph) {
+            severeIntervals.push(interval);
+          }
         }
       }
     } catch (err: any) {
