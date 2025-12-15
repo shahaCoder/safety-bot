@@ -80,7 +80,34 @@ export async function getSafetyEventsInWindow(
       },
     });
 
-    const events = res.data?.data || res.data?.safetyEvents || res.data || [];
+    const raw = res.data;
+
+    // Detailed debug logging for cron: show exact JSON shape from Samsara
+    try {
+      const keys =
+        raw && typeof raw === "object" ? Object.keys(raw) : ["<non-object>"];
+      console.log(
+        "[SAMSARA][SAFETY][RAW_RESPONSE_KEYS]",
+        JSON.stringify(keys),
+      );
+
+      const sampleEvent =
+        raw?.data?.[0] ??
+        raw?.safetyEvents?.[0] ??
+        (Array.isArray(raw) ? raw[0] : raw);
+
+      console.log(
+        "[SAMSARA][SAFETY][RAW_SAMPLE_EVENT]",
+        JSON.stringify(sampleEvent, null, 2),
+      );
+    } catch (logErr) {
+      console.log(
+        "[SAMSARA][SAFETY][RAW_LOG_ERROR]",
+        (logErr as any)?.message ?? logErr,
+      );
+    }
+
+    const events = raw?.data || raw?.safetyEvents || raw || [];
 
     console.log(`🛰 Samsara returned ${events.length} events for window ${window.from.toISOString()} to ${window.to.toISOString()}`);
     return events;

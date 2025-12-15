@@ -652,12 +652,37 @@ async function sendSafetyAlertWithVideo(
   const vehicleName = event.vehicle?.name ?? 'Unknown';
   const vehicleId = event.vehicle?.id ?? 'Unknown';
 
-  // Select video URL using same logic as buildSafetyPayload
+  // 1) Попытка взять URL из самого события (как раньше, как в /safety_test)
   // Priority: forward > inward > generic
   const forward = event.downloadForwardVideoUrl as string | undefined;
   const inward = (event as any).downloadInwardVideoUrl as string | undefined;
   const generic = (event as any).downloadVideoUrl as string | undefined;
-  const videoUrl = forward || inward || generic;
+  let videoUrl = forward || inward || generic;
+
+  // 2) Если в фиде видео нет — делаем обязательный lookup в Samsara по окну ±5 минут
+  if (!videoUrl) {
+    console.log(
+      `🎯 [sendSafetyAlertWithVideo] Event ${eventId} has no media URLs in feed, performing media lookup...`,
+    );
+    try {
+      const media = await fetchSafetyEventMedia(event);
+      if (media.videoUrl) {
+        videoUrl = media.videoUrl;
+        console.log(
+          `🎯 [sendSafetyAlertWithVideo] Event ${eventId} media lookup SUCCESS, URL obtained`,
+        );
+      } else {
+        console.log(
+          `🎯 [sendSafetyAlertWithVideo] Event ${eventId} media lookup did not return video`,
+        );
+      }
+    } catch (lookupErr: any) {
+      console.error(
+        `❌ [sendSafetyAlertWithVideo] Event ${eventId} media lookup error:`,
+        lookupErr?.message || lookupErr,
+      );
+    }
+  }
 
   // Log context
   const maskedUrl = videoUrl ? maskVideoUrl(videoUrl) : 'none';
