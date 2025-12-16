@@ -1256,6 +1256,74 @@ bot.command('safety_test', async (ctx) => {
   }
 });
 
+// ================== /severe_speeding_test ==================
+
+/**
+ * Test command to check severe speeding events from the last 6 hours.
+ * Sends individual messages for each severe speeding event (like /safety_test).
+ * 
+ * Usage: /severe_speeding_test
+ */
+bot.command('severe_speeding_test', async (ctx) => {
+  await ctx.reply(
+    '🔍 Checking severe speeding events from Samsara (last 6 hours)...',
+  );
+
+  const now = new Date();
+  const from = new Date(now.getTime() - 6 * 60 * 60 * 1000); // 6 hours
+
+  try {
+    // Fetch all severe speeding intervals for the last 6 hours
+    const result = await fetchSpeedingIntervals({ from, to: now });
+    
+    if (result.severe.length === 0) {
+      await ctx.reply('✅ No severe speeding events in the last 6 hours (from API).');
+      return;
+    }
+
+    // Normalize to UnifiedEvent format
+    const normalized = normalizeSpeedingIntervals(result.severe);
+
+    const chatId = ctx.chat?.id;
+    if (!chatId) {
+      await ctx.reply('❌ Could not determine chat ID.');
+      return;
+    }
+
+    // Send individual message for each severe speeding event (like /safety_test)
+    for (const event of normalized) {
+      // Get vehicle name
+      let vehicleName = event.vehicleName;
+      if (!vehicleName && event.assetId) {
+        vehicleName = getVehicleNameById(event.assetId) || event.assetId;
+      }
+      if (!vehicleName) {
+        vehicleName = 'Unknown';
+      }
+
+      // Format message using the same function as cron
+      const message = formatSevereSpeedingMessage(event, vehicleName);
+
+      try {
+        await bot.telegram.sendMessage(chatId, message, {
+          parse_mode: undefined, // Plain text
+        });
+      } catch (err: any) {
+        const errorMsg = err.response?.description || err.message || 'Unknown error';
+        await ctx.reply(
+          `⚠️ Failed to send severe speeding event ${event.id}: ${errorMsg}`,
+        );
+      }
+    }
+  } catch (err: any) {
+    const errorMsg = err.response?.data || err.message || 'Unknown error';
+    await ctx.reply(
+      `❌ Error fetching severe speeding events: ${errorMsg}`,
+      { parse_mode: undefined }
+    );
+  }
+});
+
 // ================== /test_speeding (DEV/TEST) ==================
 
 /**
