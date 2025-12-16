@@ -99,7 +99,7 @@ interface DriverSeedData {
     {
       id: 13,
       name: 'PTI TEST UZ',
-      chatId: -4998245805,
+      chatId: -1003688839456,
       language: 'uz',
       trucks: ['Truck 714'],
     },
