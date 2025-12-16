@@ -157,19 +157,6 @@ bot.use((ctx, next) => {
   return next();
 });
 
-// Debug: log all commands to see what's being received
-bot.use((ctx, next) => {
-  if (ctx.message && 'text' in ctx.message && ctx.message.text?.startsWith('/')) {
-    console.log('[BOT] Command received:', {
-      command: ctx.message.text.split(' ')[0],
-      chatId: ctx.chat?.id,
-      chatType: ctx.chat?.type,
-      fromId: ctx.from?.id,
-    });
-  }
-  return next();
-});
-
 // Игнорировать /start (если кто-то вдруг напишет в группу)
 bot.start((ctx) => {
   // ничего не отвечаем
@@ -179,12 +166,6 @@ bot.start((ctx) => {
 // ================== БАЗОВЫЕ КОМАНДЫ ==================
 
 bot.command('ping', (ctx) => ctx.reply('pong 🏓'));
-
-// Test command to verify severe_speeding_test is accessible
-bot.command('test_severe', (ctx) => {
-  console.log('[TEST_SEVERE] Command called');
-  ctx.reply('✅ Test command works! Now try /severe_speeding_test');
-});
 
 bot.command('id', (ctx) => {
   const chatId = ctx.chat?.id;
@@ -1231,7 +1212,6 @@ async function checkAndNotifySafetyEvents() {
  * 
  * Usage: /severe_speeding_test
  */
-// Also register without underscore for compatibility
 bot.command('severe_speeding_test', async (ctx) => {
   // Log immediately to verify command is being called
   console.log('[SEVERE_SPEEDING_TEST] Command handler called', {
