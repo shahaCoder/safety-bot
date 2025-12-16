@@ -1323,10 +1323,12 @@ async function handleSevereSpeedingTest(ctx: any) {
     const rawText: string = ctx.message?.text || '';
     const force = /\bforce\b/i.test(rawText); // /severe_speeding_test force
     const sendHere = true; // always send to the chat where command is invoked
+    const includeLight = /\blight\b/i.test(rawText); // /severe_speeding_test light (debug)
+    const includeModerate = /\bmoderate\b/i.test(rawText); // optional debug
 
     await ctx.reply(
       `🔍 Checking SEVERE speeding intervals from Samsara (last 12 hours)...\n` +
-        `Filter: severityLevel=severe\n` +
+        `Filter: severityLevel=${includeLight ? 'severe|heavy|light' : includeModerate ? 'severe|heavy|moderate' : 'severe|heavy'}\n` +
         `Delivery: THIS chat\n` +
         `Dedup: ${force ? 'IGNORE (force)' : 'SKIP already sent (default)'}`,
       { parse_mode: undefined },
@@ -1341,19 +1343,29 @@ async function handleSevereSpeedingTest(ctx: any) {
     // Fetch ALL intervals for last 12 hours (don't rely on Samsara severityLevel)
     const result = await fetchSpeedingIntervalsAll({ from, to: now });
 
-    const severeBySamsaraCount = result.intervals.filter((i) => {
-      const sev = (i.severityLevel || '').toLowerCase().trim();
-      return sev === 'severe' || sev === 'heavy';
-    }).length;
+    // Build severity distribution for debugging
+    const sevCounts: Record<string, number> = {};
+    for (const i of result.intervals) {
+      const sev = (i.severityLevel || 'unknown').toLowerCase().trim() || 'unknown';
+      sevCounts[sev] = (sevCounts[sev] || 0) + 1;
+    }
+
+    const severeBySamsaraCount = (sevCounts['severe'] || 0) + (sevCounts['heavy'] || 0);
 
     console.log(
       `[SEVERE_SPEEDING_TEST] Found ${result.total} total intervals (all), ${severeBySamsaraCount} severe/heavy (by Samsara severityLevel)`,
     );
+    console.log('[SEVERE_SPEEDING_TEST] Severity distribution:', sevCounts);
     
-    // Filter by Samsara severityLevel in ['severe','heavy'] (UI can surface both as high-risk)
+    // Filter by requested severity levels:
+    // default: severe|heavy
+    // debug: add light or moderate via command args
     const severeByApi: SpeedingInterval[] = result.intervals.filter((i) => {
       const sev = (i.severityLevel || '').toLowerCase().trim();
-      return sev === 'severe' || sev === 'heavy';
+      if (sev === 'severe' || sev === 'heavy') return true;
+      if (includeLight && sev === 'light') return true;
+      if (includeModerate && sev === 'moderate') return true;
+      return false;
     });
     console.log(
       `[SEVERE_SPEEDING_TEST] Severe-by-API (severityLevel in [severe,heavy]): ${severeByApi.length} intervals`,
@@ -1362,15 +1374,17 @@ async function handleSevereSpeedingTest(ctx: any) {
     if (result.intervals.length === 0) {
       await ctx.reply(
         `✅ No speeding intervals found in the last 12 hours.\n` +
-          `Total intervals: ${result.total}, Severe by API: ${severeBySamsaraCount}`,
+          `Total intervals: ${result.total}, Severe/Heavy by API: ${severeBySamsaraCount}`,
       );
       return;
     }
 
     if (severeByApi.length === 0) {
       await ctx.reply(
-        `✅ No SEVERE/HEAVY speeding intervals found in the last 12 hours.\n` +
-          `Total intervals: ${result.total}, Severe/Heavy by API: ${severeBySamsaraCount}`,
+        `✅ No matching speeding intervals found in the last 12 hours.\n` +
+          `Total intervals: ${result.total}\n` +
+          `Severity counts: severe=${sevCounts['severe'] || 0}, heavy=${sevCounts['heavy'] || 0}, moderate=${sevCounts['moderate'] || 0}, light=${sevCounts['light'] || 0}, unknown=${sevCounts['unknown'] || 0}\n` +
+          `Filter used: ${includeLight ? 'severe|heavy|light' : includeModerate ? 'severe|heavy|moderate' : 'severe|heavy'}`,
         { parse_mode: undefined },
       );
       return;
