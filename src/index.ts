@@ -167,6 +167,12 @@ bot.start((ctx) => {
 
 bot.command('ping', (ctx) => ctx.reply('pong 🏓'));
 
+// Test command to verify severe_speeding_test is accessible
+bot.command('test_severe', (ctx) => {
+  console.log('[TEST_SEVERE] Command called');
+  ctx.reply('✅ Test command works! Now try /severe_speeding_test');
+});
+
 bot.command('id', (ctx) => {
   const chatId = ctx.chat?.id;
   ctx.reply(`Your chat id: \`${chatId}\``, { parse_mode: 'Markdown' });
@@ -1204,58 +1210,6 @@ async function checkAndNotifySafetyEvents() {
   }
 }
 
-// ================== /safety_test ==================
-
-bot.command('safety_test', async (ctx) => {
-  await ctx.reply(
-    '🔍 Checking recent safety events from Samsara (last 60 min, only serious ones)...',
-  );
-
-  const events = await getRecentSafetyEvents(SAFETY_LOOKBACK_MINUTES);
-
-  if (!events.length) {
-    await ctx.reply('✅ No safety events in the last 60 minutes (from API).');
-    return;
-  }
-
-  const relevant = events.filter(isRelevantEvent);
-
-  if (!relevant.length) {
-    await ctx.reply(
-      '✅ No relevant safety events (only Following Distance / minor stuff).',
-    );
-    return;
-  }
-
-  const top = relevant.slice(0, 5);
-  const chatId = ctx.chat?.id;
-
-  if (!chatId) {
-    await ctx.reply('❌ Could not determine chat ID.');
-    return;
-  }
-
-  // Use shared helper function (same as cron)
-  // Note: /safety_test doesn't add driver mentions, so we use caption directly
-  for (const ev of top) {
-    const { caption } = buildSafetyPayload(ev);
-    
-    // Use shared helper to ensure same behavior as cron
-    const result = await sendSafetyAlertWithVideo(
-      ev,
-      chatId,
-        caption,
-      false // Not a dry run for manual test
-    );
-
-    if (!result.success) {
-      await ctx.reply(
-        `⚠️ Failed to send event ${ev.id}: ${result.error || 'Unknown error'}`,
-      );
-    }
-  }
-});
-
 // ================== /severe_speeding_test ==================
 
 /**
@@ -1265,11 +1219,20 @@ bot.command('safety_test', async (ctx) => {
  * Usage: /severe_speeding_test
  */
 bot.command('severe_speeding_test', async (ctx) => {
+  // Log immediately to verify command is being called
+  console.log('[SEVERE_SPEEDING_TEST] Command handler called', {
+    chatId: ctx.chat?.id,
+    chatType: ctx.chat?.type,
+    fromId: ctx.from?.id,
+    username: ctx.from?.username,
+  });
+
   try {
-    console.log('[SEVERE_SPEEDING_TEST] Command received');
+    // Send immediate response first
     await ctx.reply(
       '🔍 Checking severe speeding events from Samsara (last 6 hours)...',
     );
+    console.log('[SEVERE_SPEEDING_TEST] Initial reply sent');
 
     const now = new Date();
     const from = new Date(now.getTime() - 6 * 60 * 60 * 1000); // 6 hours
@@ -1328,14 +1291,72 @@ bot.command('severe_speeding_test', async (ctx) => {
 
     if (sentCount > 0) {
       console.log(`[SEVERE_SPEEDING_TEST] Successfully sent ${sentCount} event(s)`);
+    } else if (normalized.length > 0) {
+      await ctx.reply(`⚠️ Found ${normalized.length} events but failed to send all of them.`);
     }
   } catch (err: any) {
-    const errorMsg = err.response?.data || err.message || 'Unknown error';
+    const errorMsg = err.response?.data || err.message || String(err);
     console.error('[SEVERE_SPEEDING_TEST] Error:', err);
+    try {
+      await ctx.reply(
+        `❌ Error fetching severe speeding events: ${errorMsg}`,
+        { parse_mode: undefined }
+      );
+    } catch (replyErr) {
+      console.error('[SEVERE_SPEEDING_TEST] Failed to send error message:', replyErr);
+    }
+  }
+});
+
+// ================== /safety_test ==================
+
+bot.command('safety_test', async (ctx) => {
+  await ctx.reply(
+    '🔍 Checking recent safety events from Samsara (last 60 min, only serious ones)...',
+  );
+
+  const events = await getRecentSafetyEvents(SAFETY_LOOKBACK_MINUTES);
+
+  if (!events.length) {
+    await ctx.reply('✅ No safety events in the last 60 minutes (from API).');
+    return;
+  }
+
+  const relevant = events.filter(isRelevantEvent);
+
+  if (!relevant.length) {
     await ctx.reply(
-      `❌ Error fetching severe speeding events: ${errorMsg}`,
-      { parse_mode: undefined }
+      '✅ No relevant safety events (only Following Distance / minor stuff).',
     );
+    return;
+  }
+
+  const top = relevant.slice(0, 5);
+  const chatId = ctx.chat?.id;
+
+  if (!chatId) {
+    await ctx.reply('❌ Could not determine chat ID.');
+    return;
+  }
+
+  // Use shared helper function (same as cron)
+  // Note: /safety_test doesn't add driver mentions, so we use caption directly
+  for (const ev of top) {
+    const { caption } = buildSafetyPayload(ev);
+    
+    // Use shared helper to ensure same behavior as cron
+    const result = await sendSafetyAlertWithVideo(
+      ev,
+      chatId,
+        caption,
+      false // Not a dry run for manual test
+    );
+
+    if (!result.success) {
+      await ctx.reply(
+        `⚠️ Failed to send event ${ev.id}: ${result.error || 'Unknown error'}`,
+      );
+    }
   }
 });
 
