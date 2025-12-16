@@ -1265,16 +1265,21 @@ bot.command('safety_test', async (ctx) => {
  * Usage: /severe_speeding_test
  */
 bot.command('severe_speeding_test', async (ctx) => {
-  await ctx.reply(
-    '🔍 Checking severe speeding events from Samsara (last 6 hours)...',
-  );
-
-  const now = new Date();
-  const from = new Date(now.getTime() - 6 * 60 * 60 * 1000); // 6 hours
-
   try {
+    console.log('[SEVERE_SPEEDING_TEST] Command received');
+    await ctx.reply(
+      '🔍 Checking severe speeding events from Samsara (last 6 hours)...',
+    );
+
+    const now = new Date();
+    const from = new Date(now.getTime() - 6 * 60 * 60 * 1000); // 6 hours
+
+    console.log(`[SEVERE_SPEEDING_TEST] Fetching intervals from ${from.toISOString()} to ${now.toISOString()}`);
+
     // Fetch all severe speeding intervals for the last 6 hours
     const result = await fetchSpeedingIntervals({ from, to: now });
+    
+    console.log(`[SEVERE_SPEEDING_TEST] Found ${result.total} total intervals, ${result.severe.length} severe`);
     
     if (result.severe.length === 0) {
       await ctx.reply('✅ No severe speeding events in the last 6 hours (from API).');
@@ -1283,6 +1288,7 @@ bot.command('severe_speeding_test', async (ctx) => {
 
     // Normalize to UnifiedEvent format
     const normalized = normalizeSpeedingIntervals(result.severe);
+    console.log(`[SEVERE_SPEEDING_TEST] Normalized ${normalized.length} events`);
 
     const chatId = ctx.chat?.id;
     if (!chatId) {
@@ -1291,6 +1297,7 @@ bot.command('severe_speeding_test', async (ctx) => {
     }
 
     // Send individual message for each severe speeding event (like /safety_test)
+    let sentCount = 0;
     for (const event of normalized) {
       // Get vehicle name
       let vehicleName = event.vehicleName;
@@ -1308,15 +1315,23 @@ bot.command('severe_speeding_test', async (ctx) => {
         await bot.telegram.sendMessage(chatId, message, {
           parse_mode: undefined, // Plain text
         });
+        sentCount++;
+        console.log(`[SEVERE_SPEEDING_TEST] Sent event ${event.id} for vehicle ${vehicleName}`);
       } catch (err: any) {
         const errorMsg = err.response?.description || err.message || 'Unknown error';
+        console.error(`[SEVERE_SPEEDING_TEST] Failed to send event ${event.id}:`, errorMsg);
         await ctx.reply(
           `⚠️ Failed to send severe speeding event ${event.id}: ${errorMsg}`,
         );
       }
     }
+
+    if (sentCount > 0) {
+      console.log(`[SEVERE_SPEEDING_TEST] Successfully sent ${sentCount} event(s)`);
+    }
   } catch (err: any) {
     const errorMsg = err.response?.data || err.message || 'Unknown error';
+    console.error('[SEVERE_SPEEDING_TEST] Error:', err);
     await ctx.reply(
       `❌ Error fetching severe speeding events: ${errorMsg}`,
       { parse_mode: undefined }
