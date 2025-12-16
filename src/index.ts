@@ -1232,27 +1232,59 @@ async function handleSevereSpeedingTest(ctx: any) {
   try {
     // Send immediate response first
     await ctx.reply(
-      '🔍 Checking severe speeding events from Samsara (last 6 hours)...',
+      '🔍 Checking severe speeding events from Samsara (last 3 hours)...',
     );
     console.log('[SEVERE_SPEEDING_TEST] Initial reply sent');
 
-    // Use the same function as cron to ensure consistent results
-    // This uses the sliding window strategy (12h + buffer) which properly detects severe intervals
-    console.log(`[SEVERE_SPEEDING_TEST] Using fetchSpeedingIntervalsWithSlidingWindow (same as cron)`);
+    // Use 3-hour window (not 12 hours like cron)
+    const now = new Date();
+    const from = new Date(now.getTime() - 3 * 60 * 60 * 1000); // 3 hours ago
     
-    const result = await fetchSpeedingIntervalsWithSlidingWindow();
+    console.log(`[SEVERE_SPEEDING_TEST] Fetching intervals from ${from.toISOString()} to ${now.toISOString()}`);
     
-    console.log(`[SEVERE_SPEEDING_TEST] Found ${result.total} total intervals, ${result.severe} severe, ${result.newToPost.length} new to post`);
-    console.log(`[SEVERE_SPEEDING_TEST] Window: ${result.windowStart} to ${result.windowEnd}`);
+    // Fetch intervals for last 3 hours
+    const result = await fetchSpeedingIntervals({ from, to: now });
     
-    if (result.newToPost.length === 0) {
-      await ctx.reply(`✅ No severe speeding events found (window: last 12 hours + buffer).\nTotal intervals: ${result.total}, Severe: ${result.severe}`);
+    console.log(`[SEVERE_SPEEDING_TEST] Found ${result.total} total intervals, ${result.severe.length} severe`);
+    
+    if (result.severe.length === 0) {
+      await ctx.reply(`✅ No severe speeding events found in the last 3 hours.\nTotal intervals: ${result.total}`);
       return;
     }
 
-    // Normalize to UnifiedEvent format (use newToPost which is already filtered and deduplicated)
-    const normalized = normalizeSpeedingIntervals(result.newToPost);
+    // Normalize to UnifiedEvent format
+    const normalized = normalizeSpeedingIntervals(result.severe);
     console.log(`[SEVERE_SPEEDING_TEST] Normalized ${normalized.length} events`);
+
+    // Filter: only events from last 3 hours AND not already sent
+    const threeHoursAgo = from.getTime();
+    const recentAndNew: UnifiedEvent[] = [];
+    
+    for (const event of normalized) {
+      const eventTime = new Date(event.occurredAt).getTime();
+      
+      // Check if event is within last 3 hours
+      if (eventTime < threeHoursAgo) {
+        console.log(`[SEVERE_SPEEDING_TEST] Skipping event ${event.id} - older than 3 hours (${event.occurredAt})`);
+        continue;
+      }
+      
+      // Check deduplication: skip if already sent
+      const alreadySent = await isEventSent(event.id);
+      if (alreadySent) {
+        console.log(`[SEVERE_SPEEDING_TEST] Skipping event ${event.id} - already sent`);
+        continue;
+      }
+      
+      recentAndNew.push(event);
+    }
+    
+    console.log(`[SEVERE_SPEEDING_TEST] After filtering (last 3h + dedup): ${recentAndNew.length} events to send`);
+    
+    if (recentAndNew.length === 0) {
+      await ctx.reply(`✅ No new severe speeding events in the last 3 hours.\nFound ${result.severe.length} severe events, but all were either older than 3 hours or already sent.`);
+      return;
+    }
 
     const chatId = ctx.chat?.id;
     if (!chatId) {
@@ -1266,7 +1298,7 @@ async function handleSevereSpeedingTest(ctx: any) {
     await getAllVehiclesInfo(); // This will populate the cache if needed
     
     let sentCount = 0;
-    for (const event of normalized) {
+    for (const event of recentAndNew) {
       // Get vehicle name - try multiple sources
       let vehicleName: string = event.vehicleName || '';
       if (!vehicleName && event.assetId) {
@@ -1288,6 +1320,10 @@ async function handleSevereSpeedingTest(ctx: any) {
         await bot.telegram.sendMessage(chatId, message, {
           parse_mode: undefined, // Plain text
         });
+        
+        // Mark as sent (dedup)
+        await markEventSent(event.id, event.type);
+        
         sentCount++;
         console.log(`[SEVERE_SPEEDING_TEST] Sent event ${event.id} for vehicle ${vehicleName}`);
       } catch (err: any) {
