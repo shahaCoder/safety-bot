@@ -40,7 +40,7 @@ import {
 } from './repository';
 import { requireAdminPrivateChat } from './guards/isAdmin';
 import { handleDebugSafety } from './commands/debugSafety';
-import { fetchSpeedingIntervals, fetchSpeedingIntervalsWithSlidingWindow } from './services/samsaraSpeeding';
+import { fetchSpeedingIntervals, fetchSpeedingIntervalsWithSlidingWindow, SpeedingInterval } from './services/samsaraSpeeding';
 import { getAllVehicleAssetIds, getVehicleNameById } from './services/samsaraVehicles';
 import {
   normalizeSafetyEvents,
@@ -1255,6 +1255,177 @@ bot.command('safety_test', async (ctx) => {
     }
   }
 });
+
+// ================== /severe_speeding_test ==================
+
+/**
+ * Test command to check severe speeding events from the last 6 hours.
+ * Sends individual messages for each severe speeding event to the appropriate group (like /safety_test).
+ * 
+ * Usage: /severe_speeding_test
+ */
+async function handleSevereSpeedingTest(ctx: any) {
+  console.log('[SEVERE_SPEEDING_TEST] Command handler called', {
+    chatId: ctx.chat?.id,
+    chatType: ctx.chat?.type,
+    fromId: ctx.from?.id,
+    username: ctx.from?.username,
+    command: ctx.message?.text,
+  });
+
+  try {
+    await ctx.reply('🔍 Checking severe speeding events from Samsara (last 6 hours)...');
+    console.log('[SEVERE_SPEEDING_TEST] Initial reply sent');
+
+    const now = new Date();
+    const from = new Date(now.getTime() - 6 * 60 * 60 * 1000); // 6 hours ago
+    
+    console.log(`[SEVERE_SPEEDING_TEST] Fetching intervals from ${from.toISOString()} to ${now.toISOString()}`);
+    
+    // Fetch intervals for last 6 hours
+    const result = await fetchSpeedingIntervals({ from, to: now });
+    
+    console.log(`[SEVERE_SPEEDING_TEST] Found ${result.total} total intervals, ${result.severe.length} severe (by Samsara severityLevel)`);
+    
+    // Apply the same filtering logic as cron (fetchSpeedingIntervalsWithSlidingWindow)
+    // Cron uses SPEEDING_OVER_THRESHOLD_MPH (default 15 mph) instead of severityLevel
+    const overThresholdMph = parseFloat(
+      process.env.SPEEDING_OVER_THRESHOLD_MPH || '15',
+    );
+    console.log(`[SEVERE_SPEEDING_TEST] Applying over-threshold filter: ${overThresholdMph} mph (same as cron)`);
+    
+    // Filter by speed over threshold (same logic as fetchSpeedingIntervalsWithSlidingWindow)
+    const severeByThreshold: SpeedingInterval[] = [];
+    for (const interval of result.severe) {
+      const actual = interval.maxSpeedMph;
+      const limit = interval.speedLimitMph;
+      if (actual != null && limit != null) {
+        const over = actual - limit;
+        if (over >= overThresholdMph) {
+          severeByThreshold.push(interval);
+        }
+      }
+    }
+    
+    console.log(`[SEVERE_SPEEDING_TEST] After threshold filter (>=${overThresholdMph} mph): ${severeByThreshold.length} severe intervals`);
+    
+    if (severeByThreshold.length === 0) {
+      await ctx.reply(`✅ No severe speeding events found in the last 6 hours (threshold: >=${overThresholdMph} mph).\nTotal intervals: ${result.total}, Severe by API: ${result.severe.length}`);
+      return;
+    }
+
+    // Normalize to UnifiedEvent format (use threshold-filtered intervals)
+    const normalized = normalizeSpeedingIntervals(severeByThreshold);
+    console.log(`[SEVERE_SPEEDING_TEST] Normalized ${normalized.length} events`);
+
+    // Ensure vehicles cache is populated for name lookup
+    const { getAllVehiclesInfo } = await import('./services/samsaraVehicles');
+    await getAllVehiclesInfo();
+    
+    // Filter: only events from last 6 hours AND not already sent
+    const sixHoursAgo = from.getTime();
+    const recentAndNew: UnifiedEvent[] = [];
+    
+    for (const event of normalized) {
+      const eventTime = new Date(event.occurredAt).getTime();
+      
+      // Check if event is within last 6 hours
+      if (eventTime < sixHoursAgo) {
+        console.log(`[SEVERE_SPEEDING_TEST] Skipping event ${event.id} - older than 6 hours (${event.occurredAt})`);
+        continue;
+      }
+      
+      // Check deduplication: skip if already sent
+      const alreadySent = await isEventSent(event.id);
+      if (alreadySent) {
+        console.log(`[SEVERE_SPEEDING_TEST] Skipping event ${event.id} - already sent`);
+        continue;
+      }
+      
+      recentAndNew.push(event);
+    }
+    
+    console.log(`[SEVERE_SPEEDING_TEST] After filtering (last 6h + dedup): ${recentAndNew.length} events to send`);
+    
+    if (recentAndNew.length === 0) {
+      await ctx.reply(`✅ No new severe speeding events in the last 6 hours.\nFound ${severeByThreshold.length} severe events, but all were either older than 6 hours or already sent.`);
+      return;
+    }
+
+    // Send messages to appropriate groups based on vehicle name
+    let sentCount = 0;
+    for (const event of recentAndNew) {
+      // Get vehicle name
+      let vehicleName: string = event.vehicleName || '';
+      if (!vehicleName && event.assetId) {
+        const cachedName = getVehicleNameById(event.assetId);
+        vehicleName = cachedName || '';
+      }
+      if (!vehicleName && event.assetId) {
+        vehicleName = event.assetId;
+      }
+      if (!vehicleName) {
+        vehicleName = 'Unknown';
+      }
+
+      // Find chat by vehicle name (same logic as cron)
+      const chat = await findChatByVehicleName(vehicleName);
+      if (!chat) {
+        console.log(`[SEVERE_SPEEDING_TEST] No chat mapping for vehicle ${vehicleName} (assetId: ${event.assetId})`);
+        continue;
+      }
+
+      const chatId = Number(chat.telegramChatId);
+
+      // Format message using the same function as cron
+      const message = formatSevereSpeedingMessage(event, vehicleName);
+
+      try {
+        await bot.telegram.sendMessage(chatId, message, {
+          parse_mode: undefined, // Plain text
+        });
+        
+        // Mark as sent (dedup)
+        await markEventSent(event.id, event.type);
+        
+        // Log event to database
+        const behavior = 'Severe Speeding';
+        const timeLocal = convertToNewYorkTime(event.occurredAt);
+        await logUnifiedEvent(event, chatId, behavior, null, timeLocal);
+        
+        sentCount++;
+        console.log(`[SEVERE_SPEEDING_TEST] Sent event ${event.id} to ${chat.name} (chatId=${chatId}) for vehicle ${vehicleName}`);
+      } catch (err: any) {
+        const errorMsg = err.response?.description || err.message || 'Unknown error';
+        console.error(`[SEVERE_SPEEDING_TEST] Failed to send event ${event.id} to ${chat.name}:`, errorMsg);
+        // Still log the event even if sending failed
+        const behavior = 'Severe Speeding';
+        const timeLocal = convertToNewYorkTime(event.occurredAt);
+        await logUnifiedEvent(event, chatId, behavior, null, timeLocal);
+      }
+    }
+
+    if (sentCount > 0) {
+      await ctx.reply(`✅ Successfully sent ${sentCount} severe speeding event(s) to their respective groups.`);
+      console.log(`[SEVERE_SPEEDING_TEST] Successfully sent ${sentCount} event(s)`);
+    } else {
+      await ctx.reply(`⚠️ Found ${recentAndNew.length} events but failed to send all of them (check logs for details).`);
+    }
+  } catch (err: any) {
+    const errorMsg = err.response?.data || err.message || String(err);
+    console.error('[SEVERE_SPEEDING_TEST] Error:', err);
+    try {
+      await ctx.reply(
+        `❌ Error fetching severe speeding events: ${errorMsg}`,
+        { parse_mode: undefined }
+      );
+    } catch (replyErr) {
+      console.error('[SEVERE_SPEEDING_TEST] Failed to send error message:', replyErr);
+    }
+  }
+}
+
+bot.command('severe_speeding_test', handleSevereSpeedingTest);
 
 // ================== /test_speeding (DEV/TEST) ==================
 
