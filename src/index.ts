@@ -565,6 +565,52 @@ Over limit: +${overLimit} mph
 }
 
 /**
+ * Format ANY speeding interval message (plain text, no Markdown).
+ * Used by /severe_speeding_test when returning all speeding intervals.
+ */
+function formatSpeedingIntervalMessage(
+  event: UnifiedEvent,
+  vehicleName: string
+): string {
+  const truckNumber = vehicleName.replace(/^Truck\s+/i, '').trim() || vehicleName;
+
+  const speedLimitMph = Math.round(event.details?.speedLimitMph ?? 0);
+  const actualSpeedMph = Math.round(event.details?.maxSpeedMph ?? 0);
+  const overLimit = actualSpeedMph - speedLimitMph;
+
+  const date = new Date(event.occurredAt);
+  const dateLabel = date.toLocaleString('en-US', {
+    timeZone: 'America/New_York',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+
+  const timeLabel = date.toLocaleString('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+
+  const location = event.details?.location?.address || 'N/A';
+  const severity = (event.details as any)?.severityLevel || 'N/A';
+
+  return `🚧 SPEEDING INTERVAL
+
+🚛 Truck: ${truckNumber}
+📍 Location: ${location}
+🕒 Time: ${dateLabel} ${timeLabel}
+
+⚠️ Speed:
+Speed limit: ${speedLimitMph} mph
+Actual speed: ${actualSpeedMph} mph
+Over limit: +${overLimit} mph
+
+🏷 Severity (Samsara): ${severity}`;
+}
+
+/**
  * Format unified event caption for display.
  * Works for both safety events and speeding intervals.
  */
@@ -1279,9 +1325,12 @@ async function handleSevereSpeedingTest(ctx: any) {
     const sendHere = /\bhere\b/i.test(rawText); // /severe_speeding_test here
 
     await ctx.reply(
-      `🔍 Checking severe speeding events from Samsara (last 12 hours)...` +
-        (force ? `\nMode: FORCE resend (ignoring dedup)` : '') +
-        (sendHere ? `\nMode: HERE (send to this chat)` : ''),
+      `🔍 Checking speeding intervals from Samsara (last 12 hours)...\n` +
+        `Mode: ALL intervals\n` +
+        `Delivery: THIS chat\n` +
+        `Dedup: ${force ? 'IGNORE (force)' : 'SKIP already sent (default)'}\n\n` +
+        `Tip: use \`/severe_speeding_test force\` to resend everything again.`,
+      { parse_mode: undefined },
     );
     console.log('[SEVERE_SPEEDING_TEST] Initial reply sent');
 
@@ -1290,7 +1339,7 @@ async function handleSevereSpeedingTest(ctx: any) {
     
     console.log(`[SEVERE_SPEEDING_TEST] Fetching intervals from ${from.toISOString()} to ${now.toISOString()}`);
     
-    // Fetch ALL intervals for last 6 hours (don't rely on Samsara severityLevel)
+    // Fetch ALL intervals for last 12 hours (don't rely on Samsara severityLevel)
     const result = await fetchSpeedingIntervalsAll({ from, to: now });
 
     const severeBySamsaraCount = result.intervals.filter(
@@ -1301,12 +1350,11 @@ async function handleSevereSpeedingTest(ctx: any) {
       `[SEVERE_SPEEDING_TEST] Found ${result.total} total intervals (all), ${severeBySamsaraCount} severe (by Samsara severityLevel)`,
     );
     
-    // Apply the same filtering logic as cron (fetchSpeedingIntervalsWithSlidingWindow)
-    // Cron uses SPEEDING_OVER_THRESHOLD_MPH (default 15 mph) instead of severityLevel
+    // Threshold used to classify "severe" by our definition (kept for summary only)
     const overThresholdMph = parseFloat(
       process.env.SPEEDING_OVER_THRESHOLD_MPH || '15',
     );
-    console.log(`[SEVERE_SPEEDING_TEST] Applying over-threshold filter: ${overThresholdMph} mph (same as cron)`);
+    console.log(`[SEVERE_SPEEDING_TEST] Threshold for severe-by-mph: ${overThresholdMph} mph`);
     
     // Filter by speed over threshold (our definition of severe)
     const severeByThreshold: SpeedingInterval[] = [];
@@ -1321,19 +1369,19 @@ async function handleSevereSpeedingTest(ctx: any) {
       }
     }
     
-    console.log(`[SEVERE_SPEEDING_TEST] After threshold filter (>=${overThresholdMph} mph): ${severeByThreshold.length} severe intervals`);
-    
-    if (severeByThreshold.length === 0) {
+    console.log(`[SEVERE_SPEEDING_TEST] Severe-by-threshold (>=${overThresholdMph} mph): ${severeByThreshold.length} intervals`);
+
+    if (result.intervals.length === 0) {
       await ctx.reply(
-        `✅ No severe speeding events found in the last 12 hours (threshold: >=${overThresholdMph} mph).\n` +
-        `Total intervals: ${result.total}, Severe by API: ${severeBySamsaraCount}`,
+        `✅ No speeding intervals found in the last 12 hours.\n` +
+          `Total intervals: ${result.total}, Severe by API: ${severeBySamsaraCount}, Severe by threshold (>=${overThresholdMph} mph): ${severeByThreshold.length}`,
       );
       return;
     }
 
-    // Normalize to UnifiedEvent format (use threshold-filtered intervals)
-    const normalized = normalizeSpeedingIntervals(severeByThreshold);
-    console.log(`[SEVERE_SPEEDING_TEST] Normalized ${normalized.length} events`);
+    // Normalize to UnifiedEvent format (ALL intervals)
+    const normalized = normalizeSpeedingIntervals(result.intervals);
+    console.log(`[SEVERE_SPEEDING_TEST] Normalized ${normalized.length} interval(s)`);
 
     // Ensure vehicles cache is populated for name lookup
     const { getAllVehiclesInfo } = await import('./services/samsaraVehicles');
@@ -1368,7 +1416,7 @@ async function handleSevereSpeedingTest(ctx: any) {
       recentAndNew.push(event);
     }
     
-    console.log(`[SEVERE_SPEEDING_TEST] After filtering (last 12h + dedup): ${recentAndNew.length} events to send`);
+    console.log(`[SEVERE_SPEEDING_TEST] After filtering (last 12h + dedup): ${recentAndNew.length} interval(s) to send`);
     
     if (recentAndNew.length === 0) {
       const example = (arr: UnifiedEvent[]) =>
@@ -1378,21 +1426,23 @@ async function handleSevereSpeedingTest(ctx: any) {
           .join('\n');
 
       await ctx.reply(
-        `✅ No new severe speeding events in the last 12 hours.\n` +
-          `Found ${severeByThreshold.length} severe-by-threshold interval(s).\n` +
+        `✅ No new speeding intervals to show in the last 12 hours.\n` +
+          `Total intervals: ${result.total}\n` +
+          `Severe by API: ${severeBySamsaraCount}\n` +
+          `Severe by threshold (>=${overThresholdMph} mph): ${severeByThreshold.length}\n` +
           `Skipped as older than 12h: ${skippedOld.length}\n` +
           `Skipped as already sent: ${skippedSent.length}\n` +
           (skippedSent.length
             ? `\nExamples already sent:\n${example(skippedSent)}`
             : '') +
           (skippedOld.length ? `\nExamples older:\n${example(skippedOld)}` : '') +
-          `\n\nTip: run \`/severe_speeding_test force\` to resend ignoring dedup, or \`/severe_speeding_test here\` to send into this chat.`,
+          `\n\nTip: run \`/severe_speeding_test force\` to resend everything again.`,
         { parse_mode: undefined },
       );
       return;
     }
 
-    // Send messages to appropriate groups based on vehicle name
+    // Send intervals to THIS chat (for easy comparison with Insomnia)
     let sentCount = 0;
     for (const event of recentAndNew) {
       // Get vehicle name
@@ -1408,22 +1458,14 @@ async function handleSevereSpeedingTest(ctx: any) {
         vehicleName = 'Unknown';
       }
 
-      // Decide where to send:
-      // - default: mapped driver group by vehicleName (same as cron)
-      // - here: send to the chat where the command was invoked
-      const chatId = sendHere ? Number(ctx.chat?.id) : null;
-      const chat = sendHere ? null : await findChatByVehicleName(vehicleName);
-      const targetChatId = chatId ?? (chat ? Number(chat.telegramChatId) : null);
+      const targetChatId = Number(ctx.chat?.id);
 
       if (!targetChatId) {
-        console.log(
-          `[SEVERE_SPEEDING_TEST] No target chat for vehicle ${vehicleName} (assetId: ${event.assetId}) sendHere=${sendHere}`,
-        );
+        console.log(`[SEVERE_SPEEDING_TEST] No target chatId in ctx`);
         continue;
       }
 
-      // Format message using the same function as cron
-      const message = formatSevereSpeedingMessage(event, vehicleName);
+      const message = formatSpeedingIntervalMessage(event, vehicleName);
 
       try {
         await bot.telegram.sendMessage(targetChatId, message, {
@@ -1434,7 +1476,7 @@ async function handleSevereSpeedingTest(ctx: any) {
         await markEventSent(event.id, event.type);
         
         // Log event to database
-        const behavior = 'Severe Speeding';
+        const behavior = 'Speeding';
         const timeLocal = convertToNewYorkTime(event.occurredAt);
         await logUnifiedEvent(event, targetChatId, behavior, null, timeLocal);
         
@@ -1446,7 +1488,7 @@ async function handleSevereSpeedingTest(ctx: any) {
         const errorMsg = err.response?.description || err.message || 'Unknown error';
         console.error(`[SEVERE_SPEEDING_TEST] Failed to send event ${event.id} to chatId=${targetChatId}:`, errorMsg);
         // Still log the event even if sending failed
-        const behavior = 'Severe Speeding';
+        const behavior = 'Speeding';
         const timeLocal = convertToNewYorkTime(event.occurredAt);
         await logUnifiedEvent(event, targetChatId, behavior, null, timeLocal);
       }

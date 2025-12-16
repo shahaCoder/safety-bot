@@ -48,24 +48,9 @@ async function fetchAllVehicles(): Promise<VehicleInfo[]> {
 /**
  * Get all vehicle asset IDs with caching.
  * 
- * Optional env override: If SAMSARA_ASSET_IDS is set, use it instead of fetching.
- * 
  * @returns Array of vehicle/asset IDs
  */
 export async function getAllVehicleAssetIds(): Promise<string[]> {
-  // Check for env override first
-  const envOverride = process.env.SAMSARA_ASSET_IDS;
-  if (envOverride) {
-    const ids = envOverride
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (ids.length > 0) {
-      console.log(`[SAMSARA] Using SAMSARA_ASSET_IDS env override: ${ids.length} IDs`);
-      return ids;
-    }
-  }
-
   // Check cache
   if (vehiclesCache && vehiclesCache.expiresAt > Date.now()) {
     console.log(`[SAMSARA] vehicles cache hit: ${vehiclesCache.vehicles.length}`);

@@ -239,8 +239,7 @@ export async function handleDebugSafety(ctx: Context): Promise<void> {
 
   // Get vehicle count and mode
   const vehicleAssetIds = await getAllVehicleAssetIds();
-  const useEnvOverride = !!process.env.SAMSARA_ASSET_IDS;
-  const mode = useEnvOverride ? 'env override' : 'auto-fetched';
+  const mode = 'auto-fetched';
 
   // Get speeding window configuration
   const windowHours = parseInt(process.env.SPEEDING_WINDOW_HOURS || '6', 10);

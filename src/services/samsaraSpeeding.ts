@@ -246,8 +246,6 @@ async function fetchSpeedingIntervalsInternal(
 
   // Resolve asset IDs: use provided, or fetch all vehicles, or env override
   let assetIds = opts.assetIds;
-  const useEnvOverride = !!process.env.SAMSARA_ASSET_IDS;
-  
   if (!assetIds || assetIds.length === 0) {
     assetIds = await getAllVehicleAssetIds();
   }
@@ -257,7 +255,7 @@ async function fetchSpeedingIntervalsInternal(
     return { total: 0, intervals: [], severe: [] };
   }
 
-  console.log(`[SAMSARA][SPEEDING] Fetching for ${assetIds.length} vehicles (mode: ${useEnvOverride ? 'env override' : 'auto-fetched'})`);
+  console.log(`[SAMSARA][SPEEDING] Fetching for ${assetIds.length} vehicles (auto-fetched via /fleet/vehicles)`);
 
   // Base window from options
   const baseWindow: Window = {
@@ -434,8 +432,6 @@ export async function fetchSpeedingIntervalsWithSlidingWindow(
 
   // Resolve asset IDs
   let assetIds = opts.assetIds;
-  const useEnvOverride = !!process.env.SAMSARA_ASSET_IDS;
-  
   if (!assetIds || assetIds.length === 0) {
     assetIds = await getAllVehicleAssetIds();
   }
