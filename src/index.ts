@@ -1340,8 +1340,35 @@ async function handleSevereSpeedingTest(ctx: any) {
     
     console.log(`[SEVERE_SPEEDING_TEST] Fetching intervals from ${from.toISOString()} to ${now.toISOString()}`);
     
-    // Fetch ALL intervals for last 12 hours (don't rely on Samsara severityLevel)
-    const result = await fetchSpeedingIntervalsAll({ from, to: now });
+    // IMPORTANT: We fetch per-asset (like you do in Insomnia) to avoid any API quirks
+    // where multi-asset requests return incomplete data.
+    const assetIds = await getAllVehicleAssetIds();
+    console.log(`[SEVERE_SPEEDING_TEST] Fetching per-asset for ${assetIds.length} vehicles...`);
+
+    const allIntervals: SpeedingInterval[] = [];
+    let totalIntervalsAcrossAssets = 0;
+
+    // Simple concurrency limit to keep Samsara happy
+    const CONCURRENCY = 4;
+    for (let i = 0; i < assetIds.length; i += CONCURRENCY) {
+      const batch = assetIds.slice(i, i + CONCURRENCY);
+      const results = await Promise.all(
+        batch.map(async (assetId) => {
+          try {
+            return await fetchSpeedingIntervalsAll({ from, to: now, assetIds: [assetId] });
+          } catch (e: any) {
+            console.error(`[SEVERE_SPEEDING_TEST] Failed fetching assetId=${assetId}:`, e?.message || e);
+            return { total: 0, intervals: [] as SpeedingInterval[] };
+          }
+        }),
+      );
+      for (const r of results) {
+        totalIntervalsAcrossAssets += r.total;
+        allIntervals.push(...r.intervals);
+      }
+    }
+
+    const result = { total: allIntervals.length, intervals: allIntervals };
 
     // Build severity distribution for debugging
     const sevCounts: Record<string, number> = {};
