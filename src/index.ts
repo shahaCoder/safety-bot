@@ -1229,23 +1229,22 @@ async function handleSevereSpeedingTest(ctx: any) {
     );
     console.log('[SEVERE_SPEEDING_TEST] Initial reply sent');
 
-    const now = new Date();
-    const from = new Date(now.getTime() - 6 * 60 * 60 * 1000); // 6 hours
-
-    console.log(`[SEVERE_SPEEDING_TEST] Fetching intervals from ${from.toISOString()} to ${now.toISOString()}`);
-
-    // Fetch all severe speeding intervals for the last 6 hours
-    const result = await fetchSpeedingIntervals({ from, to: now });
+    // Use the same function as cron to ensure consistent results
+    // This uses the sliding window strategy (12h + buffer) which properly detects severe intervals
+    console.log(`[SEVERE_SPEEDING_TEST] Using fetchSpeedingIntervalsWithSlidingWindow (same as cron)`);
     
-    console.log(`[SEVERE_SPEEDING_TEST] Found ${result.total} total intervals, ${result.severe.length} severe`);
+    const result = await fetchSpeedingIntervalsWithSlidingWindow();
     
-    if (result.severe.length === 0) {
-      await ctx.reply('✅ No severe speeding events in the last 6 hours (from API).');
+    console.log(`[SEVERE_SPEEDING_TEST] Found ${result.total} total intervals, ${result.severe} severe, ${result.newToPost.length} new to post`);
+    console.log(`[SEVERE_SPEEDING_TEST] Window: ${result.windowStart} to ${result.windowEnd}`);
+    
+    if (result.newToPost.length === 0) {
+      await ctx.reply(`✅ No severe speeding events found (window: last 12 hours + buffer).\nTotal intervals: ${result.total}, Severe: ${result.severe}`);
       return;
     }
 
-    // Normalize to UnifiedEvent format
-    const normalized = normalizeSpeedingIntervals(result.severe);
+    // Normalize to UnifiedEvent format (use newToPost which is already filtered and deduplicated)
+    const normalized = normalizeSpeedingIntervals(result.newToPost);
     console.log(`[SEVERE_SPEEDING_TEST] Normalized ${normalized.length} events`);
 
     const chatId = ctx.chat?.id;
