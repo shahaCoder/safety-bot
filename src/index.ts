@@ -1232,7 +1232,7 @@ async function checkAndNotifySafetyEvents() {
  * Usage: /severe_speeding_test
  */
 // Also register without underscore for compatibility
-bot.command(['severe_speeding_test', 'severespeedingtest'], async (ctx) => {
+bot.command('severe_speeding_test', async (ctx) => {
   // Log immediately to verify command is being called
   console.log('[SEVERE_SPEEDING_TEST] Command handler called', {
     chatId: ctx.chat?.id,
