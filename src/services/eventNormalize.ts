@@ -77,7 +77,27 @@ export function normalizeSpeedingInterval(
   const id = `speeding:${interval.assetId}:${interval.startTime}:${interval.endTime}`;
 
   // Extract location address if present
-  const locationAddress = (interval as any).location?.address || null;
+  // Handle both string and object formats
+  let locationAddress: string | null = null;
+  const locationData = (interval as any).location;
+  if (locationData) {
+    if (typeof locationData.address === 'string') {
+      locationAddress = locationData.address;
+    } else if (typeof locationData === 'string') {
+      locationAddress = locationData;
+    } else if (locationData.address) {
+      // If address is an object, try to extract a readable string
+      if (typeof locationData.address === 'object') {
+        // Try common address fields
+        const parts: string[] = [];
+        if (locationData.address.street) parts.push(locationData.address.street);
+        if (locationData.address.city) parts.push(locationData.address.city);
+        if (locationData.address.state) parts.push(locationData.address.state);
+        if (locationData.address.zip) parts.push(locationData.address.zip);
+        locationAddress = parts.length > 0 ? parts.join(', ') : null;
+      }
+    }
+  }
 
   return {
     source: 'speeding',

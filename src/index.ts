@@ -41,7 +41,7 @@ import {
 import { requireAdminPrivateChat } from './guards/isAdmin';
 import { handleDebugSafety } from './commands/debugSafety';
 import { fetchSpeedingIntervals, fetchSpeedingIntervalsWithSlidingWindow } from './services/samsaraSpeeding';
-import { getAllVehicleAssetIds, getVehicleNameById } from './services/samsaraVehicles';
+import { getAllVehicleAssetIds, getVehicleNameById, getAllVehiclesInfo } from './services/samsaraVehicles';
 import {
   normalizeSafetyEvents,
   normalizeSpeedingIntervals,
@@ -962,6 +962,9 @@ async function checkAndNotifySafetyEvents() {
     `🚨 Checking Samsara events (last ${SAFETY_LOOKBACK_MINUTES} min)...`,
   );
 
+  // Ensure vehicles cache is populated for name lookup
+  await getAllVehiclesInfo();
+
   // Calculate time window for safety events (60 minutes)
   const now = new Date();
   const from = new Date(now.getTime() - SAFETY_LOOKBACK_MINUTES * 60 * 1000);
@@ -1137,9 +1140,13 @@ async function checkAndNotifySafetyEvents() {
     }
 
     // Get vehicle name: try vehicleName field, then assetId lookup, then assetId as fallback
-    let vehicleName = event.vehicleName;
+    let vehicleName: string = event.vehicleName || '';
     if (!vehicleName && event.assetId) {
-      vehicleName = getVehicleNameById(event.assetId) || event.assetId;
+      const cachedName = getVehicleNameById(event.assetId);
+      vehicleName = cachedName || '';
+    }
+    if (!vehicleName && event.assetId) {
+      vehicleName = event.assetId;
     }
     if (!vehicleName) {
       vehicleName = 'Unknown';
@@ -1254,12 +1261,21 @@ async function handleSevereSpeedingTest(ctx: any) {
     }
 
     // Send individual message for each severe speeding event (like /safety_test)
+    // First, ensure vehicles cache is populated for name lookup
+    const { getAllVehiclesInfo } = await import('./services/samsaraVehicles');
+    await getAllVehiclesInfo(); // This will populate the cache if needed
+    
     let sentCount = 0;
     for (const event of normalized) {
-      // Get vehicle name
-      let vehicleName = event.vehicleName;
+      // Get vehicle name - try multiple sources
+      let vehicleName: string = event.vehicleName || '';
       if (!vehicleName && event.assetId) {
-        vehicleName = getVehicleNameById(event.assetId) || event.assetId;
+        const cachedName = getVehicleNameById(event.assetId);
+        vehicleName = cachedName || '';
+      }
+      // If still no name, use assetId as fallback (but this shouldn't happen if cache is populated)
+      if (!vehicleName && event.assetId) {
+        vehicleName = event.assetId;
       }
       if (!vehicleName) {
         vehicleName = 'Unknown';
@@ -1393,9 +1409,13 @@ bot.command('safety_test', async (ctx) => {
   if (normalizedSpeeding.length > 0) {
     for (const event of normalizedSpeeding) {
       // Get vehicle name
-      let vehicleName = event.vehicleName;
+      let vehicleName: string = event.vehicleName || '';
       if (!vehicleName && event.assetId) {
-        vehicleName = getVehicleNameById(event.assetId) || event.assetId;
+        const cachedName = getVehicleNameById(event.assetId);
+        vehicleName = cachedName || '';
+      }
+      if (!vehicleName && event.assetId) {
+        vehicleName = event.assetId;
       }
       if (!vehicleName) {
         vehicleName = 'Unknown';
