@@ -393,10 +393,7 @@ const OTHER_SERIOUS_KEYWORDS = [
   'harsh braking',
   'yield',       // Did Not Yield
   'red light',   // Ran Red Light
-  // Rolling Stop - все возможные варианты написания (Samsara AI recommendation)
-  'rolling stop',  // "Rolling Stop" (with space)
-  'rolling_stop', // "rolling_stop" (with underscore)
-  'rollingstop',  // "rollingstop" (no space/underscore)
+  'rolling stop' // Rolling Stop
 ];
 
 const ALLOWED_KEYWORDS = [...SPEEDING_KEYWORDS, ...OTHER_SERIOUS_KEYWORDS];
@@ -994,41 +991,7 @@ async function checkAndNotifySafetyEvents() {
   // Use the same mechanism as /safety_test: process SafetyEvent directly via sendSafetyAlertWithVideo()
   // This ensures 100% identical behavior and reliable video extraction
   
-  // Filter relevant events with detailed logging for rolling stop debugging
-  const relevantSafetyEvents: SafetyEvent[] = [];
-  const filteredOutEvents: { id: string; labels: string; reason?: string }[] = [];
-  
-  for (const ev of safetyEvents) {
-    const labels = ev.behaviorLabels ?? [];
-    const labelsText = labels.map((l) => `${l.label || ''} ${l.name || ''}`).join(' ').toLowerCase();
-    
-    if (isRelevantEvent(ev)) {
-      relevantSafetyEvents.push(ev);
-      // Log rolling stop events specifically for debugging
-      if (labelsText.includes('rolling')) {
-        console.log(
-          `✅ [ROLLING_STOP] Event ${ev.id} passed filter. Labels: ${JSON.stringify(labels.map(l => ({ label: l.label, name: l.name })))}`
-        );
-      }
-    } else {
-      // Log why rolling stop events are filtered out
-      if (labelsText.includes('rolling')) {
-        filteredOutEvents.push({
-          id: ev.id,
-          labels: labelsText,
-          reason: 'Not in ALLOWED_KEYWORDS or blocked by filter',
-        });
-      }
-    }
-  }
-  
-  if (filteredOutEvents.length > 0) {
-    console.log(
-      `⚠️ [ROLLING_STOP] ${filteredOutEvents.length} rolling stop event(s) filtered out:`,
-      filteredOutEvents.map(e => `ID=${e.id} labels="${e.labels}"`)
-    );
-  }
-  
+  const relevantSafetyEvents = safetyEvents.filter(isRelevantEvent);
   console.log(`✅ Relevant safety events after filter: ${relevantSafetyEvents.length}`);
 
   for (const ev of relevantSafetyEvents) {
