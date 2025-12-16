@@ -40,7 +40,7 @@ import {
 } from './repository';
 import { requireAdminPrivateChat } from './guards/isAdmin';
 import { handleDebugSafety } from './commands/debugSafety';
-import { fetchSpeedingIntervals, fetchSpeedingIntervalsWithSlidingWindow, SpeedingInterval } from './services/samsaraSpeeding';
+import { fetchSpeedingIntervals, fetchSpeedingIntervalsAll, fetchSpeedingIntervalsWithSlidingWindow, SpeedingInterval } from './services/samsaraSpeeding';
 import { getAllVehicleAssetIds, getVehicleNameById, getAllVehiclesInfo, VehicleInfo } from './services/samsaraVehicles';
 import {
   normalizeSafetyEvents,
@@ -1282,10 +1282,16 @@ async function handleSevereSpeedingTest(ctx: any) {
     
     console.log(`[SEVERE_SPEEDING_TEST] Fetching intervals from ${from.toISOString()} to ${now.toISOString()}`);
     
-    // Fetch intervals for last 6 hours
-    const result = await fetchSpeedingIntervals({ from, to: now });
-    
-    console.log(`[SEVERE_SPEEDING_TEST] Found ${result.total} total intervals, ${result.severe.length} severe (by Samsara severityLevel)`);
+    // Fetch ALL intervals for last 6 hours (don't rely on Samsara severityLevel)
+    const result = await fetchSpeedingIntervalsAll({ from, to: now });
+
+    const severeBySamsaraCount = result.intervals.filter(
+      (i) => (i.severityLevel || '').toLowerCase().trim() === 'severe',
+    ).length;
+
+    console.log(
+      `[SEVERE_SPEEDING_TEST] Found ${result.total} total intervals (all), ${severeBySamsaraCount} severe (by Samsara severityLevel)`,
+    );
     
     // Apply the same filtering logic as cron (fetchSpeedingIntervalsWithSlidingWindow)
     // Cron uses SPEEDING_OVER_THRESHOLD_MPH (default 15 mph) instead of severityLevel
@@ -1294,9 +1300,9 @@ async function handleSevereSpeedingTest(ctx: any) {
     );
     console.log(`[SEVERE_SPEEDING_TEST] Applying over-threshold filter: ${overThresholdMph} mph (same as cron)`);
     
-    // Filter by speed over threshold (same logic as fetchSpeedingIntervalsWithSlidingWindow)
+    // Filter by speed over threshold (our definition of severe)
     const severeByThreshold: SpeedingInterval[] = [];
-    for (const interval of result.severe) {
+    for (const interval of result.intervals) {
       const actual = interval.maxSpeedMph;
       const limit = interval.speedLimitMph;
       if (actual != null && limit != null) {
@@ -1310,7 +1316,10 @@ async function handleSevereSpeedingTest(ctx: any) {
     console.log(`[SEVERE_SPEEDING_TEST] After threshold filter (>=${overThresholdMph} mph): ${severeByThreshold.length} severe intervals`);
     
     if (severeByThreshold.length === 0) {
-      await ctx.reply(`✅ No severe speeding events found in the last 6 hours (threshold: >=${overThresholdMph} mph).\nTotal intervals: ${result.total}, Severe by API: ${result.severe.length}`);
+      await ctx.reply(
+        `✅ No severe speeding events found in the last 6 hours (threshold: >=${overThresholdMph} mph).\n` +
+        `Total intervals: ${result.total}, Severe by API: ${severeBySamsaraCount}`,
+      );
       return;
     }
 
@@ -1694,11 +1703,11 @@ async function sendDailySpeedingReport() {
 
       for (const assetId of assetIds) {
         try {
-          const result = await fetchSpeedingIntervals({ from, to, assetIds: [assetId] });
+          const result = await fetchSpeedingIntervalsAll({ from, to, assetIds: [assetId] });
           
           // Filter by threshold (same logic as cron)
           const severeByThreshold: SpeedingInterval[] = [];
-          for (const interval of result.severe) {
+          for (const interval of result.intervals) {
             const actual = interval.maxSpeedMph;
             const limit = interval.speedLimitMph;
             if (actual != null && limit != null) {

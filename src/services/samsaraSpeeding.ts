@@ -219,11 +219,29 @@ async function fetchSpeedingIntervalsForWindow(
 export async function fetchSpeedingIntervals(
   opts: { from: Date; to: Date; assetIds?: string[] }
 ): Promise<{ total: number; severe: SpeedingInterval[] }> {
+  const { total, severe } = await fetchSpeedingIntervalsInternal(opts);
+  return { total, severe };
+}
+
+/**
+ * Fetch speeding intervals from Samsara API for a time window and return ALL intervals (no severity filtering).
+ * Use this when you want to apply your own definition of “severe” (e.g. >= X mph over limit).
+ */
+export async function fetchSpeedingIntervalsAll(
+  opts: { from: Date; to: Date; assetIds?: string[] }
+): Promise<{ total: number; intervals: SpeedingInterval[] }> {
+  const { total, intervals } = await fetchSpeedingIntervalsInternal(opts);
+  return { total, intervals };
+}
+
+async function fetchSpeedingIntervalsInternal(
+  opts: { from: Date; to: Date; assetIds?: string[] }
+): Promise<{ total: number; intervals: SpeedingInterval[]; severe: SpeedingInterval[] }> {
   const token = process.env.SAM_SARA_API_TOKEN;
 
   if (!token) {
     console.error('❌ SAM_SARA_API_TOKEN is missing in .env');
-    return { total: 0, severe: [] };
+    return { total: 0, intervals: [], severe: [] };
   }
 
   // Resolve asset IDs: use provided, or fetch all vehicles, or env override
@@ -236,7 +254,7 @@ export async function fetchSpeedingIntervals(
 
   if (assetIds.length === 0) {
     console.warn('[SAMSARA][SPEEDING] No asset IDs available for speeding intervals fetch');
-    return { total: 0, severe: [] };
+    return { total: 0, intervals: [], severe: [] };
   }
 
   console.log(`[SAMSARA][SPEEDING] Fetching for ${assetIds.length} vehicles (mode: ${useEnvOverride ? 'env override' : 'auto-fetched'})`);
@@ -354,6 +372,7 @@ export async function fetchSpeedingIntervals(
 
   return {
     total: allFlattenedIntervals.length,
+    intervals: allFlattenedIntervals,
     severe: severeIntervals,
   };
 }
