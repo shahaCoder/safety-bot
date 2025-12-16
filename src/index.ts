@@ -1123,7 +1123,7 @@ async function checkAndNotifySafetyEvents() {
   // Normalize speeding intervals into unified events
   const normalizedSpeeding = normalizeSpeedingIntervals(speedingIntervals);
 
-  console.log(
+      console.log(
     `📊 Processing ${normalizedSpeeding.length} severe speeding intervals`
   );
 
@@ -1244,7 +1244,7 @@ bot.command('safety_test', async (ctx) => {
     const result = await sendSafetyAlertWithVideo(
       ev,
       chatId,
-      caption,
+        caption,
       false // Not a dry run for manual test
     );
 
@@ -1328,11 +1328,10 @@ bot.command('test_speeding', requireAdminPrivateChat, async (ctx) => {
   }
 });
 
-// ================== PTI REMINDERS (06:00 и 16:00 NY) ==================
+// ================== PTI REMINDERS (06:00 NY, Monday-Saturday) ==================
 
-async function sendDailyPtiReminders(isEvening: boolean = false) {
-  const timeLabel = isEvening ? '16:00 (evening)' : '06:00 (morning)';
-  console.log(`📣 Sending PTI reminders to all chats (${timeLabel})...`);
+async function sendDailyPtiReminders() {
+  console.log('📣 Sending PTI reminders to all chats (06:00)...');
   const chats = await getAllChats();
 
   if (!chats.length) {
@@ -1341,17 +1340,6 @@ async function sendDailyPtiReminders(isEvening: boolean = false) {
   }
 
   for (const chat of chats) {
-    // In evening (16:00), skip chats that already completed PTI today
-    if (isEvening) {
-      const ptiCompleted = isPtiCompletedToday(chat);
-      if (ptiCompleted) {
-        console.log(
-          `⏭️ Skipping PTI reminder for ${chat.name} (chatId=${Number(chat.telegramChatId)}) — PTI already completed today`
-        );
-        continue;
-      }
-    }
-
     // Map ChatLanguage enum to LanguageCode (already lowercase)
     const lang = chat.language as LanguageCode;
     const baseText =
@@ -1396,30 +1384,16 @@ async function sendDailyPtiReminders(isEvening: boolean = false) {
   }
 }
 
-// 06:00 America/New_York (6 AM) - Monday to Friday only
+// 06:00 America/New_York (6 AM) - Monday to Saturday (no Sunday)
 // Cron day of week: 0=Sunday, 1=Monday, ..., 6=Saturday
 cron.schedule(
-  '0 6 * * 1-5', // Monday (1) to Friday (5) at 6 AM
-  async () => {
-    console.log('⏰ [CRON PTI] 06:00 tick (Monday-Friday)');
-    await sendDailyPtiReminders();
-  },
-  {
-    timezone: 'America/New_York',
-  },
-);
-
-// 16:00 America/New_York (4 PM) - Monday to Saturday
-// Monday-Friday: regular reminder, Saturday: only reminder of the day
-// Skips chats that already completed PTI today
-cron.schedule(
-  '0 16 * * 1-6', // Monday (1) to Saturday (6) at 4 PM
+  '0 6 * * 1-6', // Monday (1) to Saturday (6) at 6 AM, Sunday (0) excluded
   async () => {
     const now = new Date();
     const dayOfWeek = now.getDay(); // 0=Sunday, 1=Monday, ..., 6=Saturday
     const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dayOfWeek];
-    console.log(`⏰ [CRON PTI] 16:00 tick (${dayName})`);
-    await sendDailyPtiReminders(true); // true = isEvening, will skip chats that completed PTI today
+    console.log(`⏰ [CRON PTI] 06:00 tick (${dayName})`);
+    await sendDailyPtiReminders();
   },
   {
     timezone: 'America/New_York',

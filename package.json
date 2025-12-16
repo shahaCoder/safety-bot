@@ -11,6 +11,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
+    "update:truck-names": "ts-node scripts/update-truck-names.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
     "test:safety-helper": "ts-node src/test-safety-helper.ts"
   },
