@@ -1306,50 +1306,81 @@ bot.command('severe_speeding_test', async (ctx) => {
 
 bot.command('safety_test', async (ctx) => {
   await ctx.reply(
-    '🔍 Checking recent safety events from Samsara (last 60 min, only serious ones)...',
+    '🔍 Checking recent safety events from Samsara (last 60 min, only serious ones) and severe speeding (last 3 hours)...',
   );
 
-  const events = await getRecentSafetyEvents(SAFETY_LOOKBACK_MINUTES);
-
-  if (!events.length) {
-    await ctx.reply('✅ No safety events in the last 60 minutes (from API).');
-    return;
-  }
-
-  const relevant = events.filter(isRelevantEvent);
-
-  if (!relevant.length) {
-    await ctx.reply(
-      '✅ No relevant safety events (only Following Distance / minor stuff).',
-    );
-    return;
-  }
-
-  const top = relevant.slice(0, 5);
   const chatId = ctx.chat?.id;
-
   if (!chatId) {
     await ctx.reply('❌ Could not determine chat ID.');
     return;
   }
 
-  // Use shared helper function (same as cron)
-  // Note: /safety_test doesn't add driver mentions, so we use caption directly
-  for (const ev of top) {
-    const { caption } = buildSafetyPayload(ev);
-    
-    // Use shared helper to ensure same behavior as cron
-    const result = await sendSafetyAlertWithVideo(
-      ev,
-      chatId,
-        caption,
-      false // Not a dry run for manual test
-    );
+  // Fetch safety events (last 60 minutes)
+  const events = await getRecentSafetyEvents(SAFETY_LOOKBACK_MINUTES);
+  const relevant = events.filter(isRelevantEvent);
 
-    if (!result.success) {
-      await ctx.reply(
-        `⚠️ Failed to send event ${ev.id}: ${result.error || 'Unknown error'}`,
+  // Fetch severe speeding events (last 3 hours)
+  const now = new Date();
+  const fromSpeeding = new Date(now.getTime() - 3 * 60 * 60 * 1000); // 3 hours
+  const speedingResult = await fetchSpeedingIntervals({ from: fromSpeeding, to: now });
+  const severeSpeedingIntervals = speedingResult.severe;
+  const normalizedSpeeding = normalizeSpeedingIntervals(severeSpeedingIntervals);
+
+  // Check if we have any events to show
+  if (!relevant.length && normalizedSpeeding.length === 0) {
+    await ctx.reply(
+      '✅ No relevant safety events (last 60 min) or severe speeding events (last 3 hours).',
+    );
+    return;
+  }
+
+  // Send safety events (same as before)
+  if (relevant.length > 0) {
+    const top = relevant.slice(0, 5);
+    for (const ev of top) {
+      const { caption } = buildSafetyPayload(ev);
+      
+      // Use shared helper to ensure same behavior as cron
+      const result = await sendSafetyAlertWithVideo(
+        ev,
+        chatId,
+        caption,
+        false // Not a dry run for manual test
       );
+
+      if (!result.success) {
+        await ctx.reply(
+          `⚠️ Failed to send event ${ev.id}: ${result.error || 'Unknown error'}`,
+        );
+      }
+    }
+  }
+
+  // Send severe speeding events (same format as cron)
+  if (normalizedSpeeding.length > 0) {
+    for (const event of normalizedSpeeding) {
+      // Get vehicle name
+      let vehicleName = event.vehicleName;
+      if (!vehicleName && event.assetId) {
+        vehicleName = getVehicleNameById(event.assetId) || event.assetId;
+      }
+      if (!vehicleName) {
+        vehicleName = 'Unknown';
+      }
+
+      // Format message using the same function as cron
+      const message = formatSevereSpeedingMessage(event, vehicleName);
+
+      try {
+        await bot.telegram.sendMessage(chatId, message, {
+          parse_mode: undefined, // Plain text
+        });
+      } catch (err: any) {
+        const errorMsg = err.response?.description || err.message || 'Unknown error';
+        await ctx.reply(
+          `⚠️ Failed to send severe speeding event ${event.id}: ${errorMsg}`,
+        );
+      }
     }
   }
 });
