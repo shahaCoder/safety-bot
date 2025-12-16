@@ -238,18 +238,26 @@ export async function updateAllChatTruckNames(): Promise<void> {
     for (const chat of chats) {
       const truckNames = chat.trucks
         .map((t) => t.name)
+        .filter((name) => name != null && name.trim() !== '') // Filter out null/empty names
         .sort()
         .join(', ') || null;
 
+      // Limit string length to avoid PostgreSQL issues (max 255 chars for safety)
+      const truckNamesLimited = truckNames && truckNames.length > 255 
+        ? truckNames.substring(0, 252) + '...' 
+        : truckNames;
+
       await prisma.chat.update({
         where: { id: chat.id },
-        data: { truckNames },
+        data: { truckNames: truckNamesLimited },
       });
     }
 
     console.log(`✅ Updated truckNames for ${chats.length} chats`);
   } catch (error) {
     console.error('❌ Error updating all chat truckNames:', error);
+    // Don't throw - this is a non-critical operation
+    // The error might be due to database constraints or data issues
   }
 }
 

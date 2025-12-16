@@ -1304,11 +1304,13 @@ async function handleSevereSpeedingTest(ctx: any) {
 }
 
 // Register command with underscore
+console.log('[BOT] Registering command: severe_speeding_test');
 bot.command('severe_speeding_test', handleSevereSpeedingTest);
 // Also register without underscore (in case Telegram normalizes it)
 bot.command('severespeedingtest', handleSevereSpeedingTest);
 // Also register as hears pattern (fallback)
 bot.hears(/^\/severe_speeding_test/i, handleSevereSpeedingTest);
+console.log('[BOT] Command severe_speeding_test registered successfully');
 
 // ================== /safety_test ==================
 
@@ -1368,8 +1370,8 @@ bot.command('safety_test', async (ctx) => {
 
   // Send safety events (same as before)
   if (relevant.length > 0) {
-    const top = relevant.slice(0, 5);
-    for (const ev of top) {
+  const top = relevant.slice(0, 5);
+  for (const ev of top) {
       const { caption } = buildSafetyPayload(ev);
       
       // Use shared helper to ensure same behavior as cron
@@ -1616,7 +1618,12 @@ bot.launch().then(async () => {
     'test_speeding',
   ].join(', '));
   // Update truckNames for all chats on startup (so they're visible in Prisma Studio)
-  await updateAllChatTruckNames();
+  // Don't block bot startup if this fails
+  try {
+    await updateAllChatTruckNames();
+  } catch (err) {
+    console.error('⚠️ Warning: Failed to update truckNames on startup (non-critical):', err);
+  }
 }).catch((err) => {
   console.error('❌ Failed to launch bot:', err);
   process.exit(1);
