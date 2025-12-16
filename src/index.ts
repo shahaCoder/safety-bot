@@ -157,6 +157,19 @@ bot.use((ctx, next) => {
   return next();
 });
 
+// Debug: log all commands to see what's being received
+bot.use((ctx, next) => {
+  if (ctx.message && 'text' in ctx.message && ctx.message.text?.startsWith('/')) {
+    console.log('[BOT] Command received:', {
+      command: ctx.message.text.split(' ')[0],
+      chatId: ctx.chat?.id,
+      chatType: ctx.chat?.type,
+      fromId: ctx.from?.id,
+    });
+  }
+  return next();
+});
+
 // Игнорировать /start (если кто-то вдруг напишет в группу)
 bot.start((ctx) => {
   // ничего не отвечаем
@@ -1218,7 +1231,9 @@ async function checkAndNotifySafetyEvents() {
  * 
  * Usage: /severe_speeding_test
  */
-bot.command('severe_speeding_test', async (ctx) => {
+console.log('[BOT] Registering command: severe_speeding_test');
+// Also register without underscore for compatibility
+bot.command(['severe_speeding_test', 'severespeedingtest'], async (ctx) => {
   // Log immediately to verify command is being called
   console.log('[SEVERE_SPEEDING_TEST] Command handler called', {
     chatId: ctx.chat?.id,
