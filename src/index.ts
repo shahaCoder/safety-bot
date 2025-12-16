@@ -1274,7 +1274,15 @@ async function handleSevereSpeedingTest(ctx: any) {
   });
 
   try {
-    await ctx.reply('🔍 Checking severe speeding events from Samsara (last 12 hours)...');
+    const rawText: string = ctx.message?.text || '';
+    const force = /\bforce\b/i.test(rawText); // /severe_speeding_test force
+    const sendHere = /\bhere\b/i.test(rawText); // /severe_speeding_test here
+
+    await ctx.reply(
+      `🔍 Checking severe speeding events from Samsara (last 12 hours)...` +
+        (force ? `\nMode: FORCE resend (ignoring dedup)` : '') +
+        (sendHere ? `\nMode: HERE (send to this chat)` : ''),
+    );
     console.log('[SEVERE_SPEEDING_TEST] Initial reply sent');
 
     const now = new Date();
@@ -1331,9 +1339,11 @@ async function handleSevereSpeedingTest(ctx: any) {
     const { getAllVehiclesInfo } = await import('./services/samsaraVehicles');
     await getAllVehiclesInfo();
     
-    // Filter: only events from last 12 hours AND not already sent
+    // Filter: only events from last 12 hours AND not already sent (unless force=true)
     const twelveHoursAgo = from.getTime();
     const recentAndNew: UnifiedEvent[] = [];
+    const skippedOld: UnifiedEvent[] = [];
+    const skippedSent: UnifiedEvent[] = [];
     
     for (const event of normalized) {
       const eventTime = new Date(event.occurredAt).getTime();
@@ -1341,14 +1351,18 @@ async function handleSevereSpeedingTest(ctx: any) {
       // Check if event is within last 12 hours
       if (eventTime < twelveHoursAgo) {
         console.log(`[SEVERE_SPEEDING_TEST] Skipping event ${event.id} - older than 12 hours (${event.occurredAt})`);
+        skippedOld.push(event);
         continue;
       }
       
-      // Check deduplication: skip if already sent
-      const alreadySent = await isEventSent(event.id);
-      if (alreadySent) {
-        console.log(`[SEVERE_SPEEDING_TEST] Skipping event ${event.id} - already sent`);
-        continue;
+      // Check deduplication: skip if already sent (unless force)
+      if (!force) {
+        const alreadySent = await isEventSent(event.id);
+        if (alreadySent) {
+          console.log(`[SEVERE_SPEEDING_TEST] Skipping event ${event.id} - already sent`);
+          skippedSent.push(event);
+          continue;
+        }
       }
       
       recentAndNew.push(event);
@@ -1357,7 +1371,24 @@ async function handleSevereSpeedingTest(ctx: any) {
     console.log(`[SEVERE_SPEEDING_TEST] After filtering (last 12h + dedup): ${recentAndNew.length} events to send`);
     
     if (recentAndNew.length === 0) {
-      await ctx.reply(`✅ No new severe speeding events in the last 12 hours.\nFound ${severeByThreshold.length} severe events, but all were either older than 12 hours or already sent.`);
+      const example = (arr: UnifiedEvent[]) =>
+        arr
+          .slice(0, 3)
+          .map((e) => `${e.id} @ ${e.occurredAt}`)
+          .join('\n');
+
+      await ctx.reply(
+        `✅ No new severe speeding events in the last 12 hours.\n` +
+          `Found ${severeByThreshold.length} severe-by-threshold interval(s).\n` +
+          `Skipped as older than 12h: ${skippedOld.length}\n` +
+          `Skipped as already sent: ${skippedSent.length}\n` +
+          (skippedSent.length
+            ? `\nExamples already sent:\n${example(skippedSent)}`
+            : '') +
+          (skippedOld.length ? `\nExamples older:\n${example(skippedOld)}` : '') +
+          `\n\nTip: run \`/severe_speeding_test force\` to resend ignoring dedup, or \`/severe_speeding_test here\` to send into this chat.`,
+        { parse_mode: undefined },
+      );
       return;
     }
 
@@ -1377,20 +1408,25 @@ async function handleSevereSpeedingTest(ctx: any) {
         vehicleName = 'Unknown';
       }
 
-      // Find chat by vehicle name (same logic as cron)
-      const chat = await findChatByVehicleName(vehicleName);
-      if (!chat) {
-        console.log(`[SEVERE_SPEEDING_TEST] No chat mapping for vehicle ${vehicleName} (assetId: ${event.assetId})`);
+      // Decide where to send:
+      // - default: mapped driver group by vehicleName (same as cron)
+      // - here: send to the chat where the command was invoked
+      const chatId = sendHere ? Number(ctx.chat?.id) : null;
+      const chat = sendHere ? null : await findChatByVehicleName(vehicleName);
+      const targetChatId = chatId ?? (chat ? Number(chat.telegramChatId) : null);
+
+      if (!targetChatId) {
+        console.log(
+          `[SEVERE_SPEEDING_TEST] No target chat for vehicle ${vehicleName} (assetId: ${event.assetId}) sendHere=${sendHere}`,
+        );
         continue;
       }
-
-      const chatId = Number(chat.telegramChatId);
 
       // Format message using the same function as cron
       const message = formatSevereSpeedingMessage(event, vehicleName);
 
       try {
-        await bot.telegram.sendMessage(chatId, message, {
+        await bot.telegram.sendMessage(targetChatId, message, {
           parse_mode: undefined, // Plain text
         });
         
@@ -1400,17 +1436,19 @@ async function handleSevereSpeedingTest(ctx: any) {
         // Log event to database
         const behavior = 'Severe Speeding';
         const timeLocal = convertToNewYorkTime(event.occurredAt);
-        await logUnifiedEvent(event, chatId, behavior, null, timeLocal);
+        await logUnifiedEvent(event, targetChatId, behavior, null, timeLocal);
         
         sentCount++;
-        console.log(`[SEVERE_SPEEDING_TEST] Sent event ${event.id} to ${chat.name} (chatId=${chatId}) for vehicle ${vehicleName}`);
+        console.log(
+          `[SEVERE_SPEEDING_TEST] Sent event ${event.id} to chatId=${targetChatId} for vehicle ${vehicleName} (sendHere=${sendHere})`,
+        );
       } catch (err: any) {
         const errorMsg = err.response?.description || err.message || 'Unknown error';
-        console.error(`[SEVERE_SPEEDING_TEST] Failed to send event ${event.id} to ${chat.name}:`, errorMsg);
+        console.error(`[SEVERE_SPEEDING_TEST] Failed to send event ${event.id} to chatId=${targetChatId}:`, errorMsg);
         // Still log the event even if sending failed
         const behavior = 'Severe Speeding';
         const timeLocal = convertToNewYorkTime(event.occurredAt);
-        await logUnifiedEvent(event, chatId, behavior, null, timeLocal);
+        await logUnifiedEvent(event, targetChatId, behavior, null, timeLocal);
       }
     }
 
