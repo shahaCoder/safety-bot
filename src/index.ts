@@ -1341,19 +1341,23 @@ async function handleSevereSpeedingTest(ctx: any) {
     // Fetch ALL intervals for last 12 hours (don't rely on Samsara severityLevel)
     const result = await fetchSpeedingIntervalsAll({ from, to: now });
 
-    const severeBySamsaraCount = result.intervals.filter(
-      (i) => (i.severityLevel || '').toLowerCase().trim() === 'severe',
-    ).length;
+    const severeBySamsaraCount = result.intervals.filter((i) => {
+      const sev = (i.severityLevel || '').toLowerCase().trim();
+      return sev === 'severe' || sev === 'heavy';
+    }).length;
 
     console.log(
-      `[SEVERE_SPEEDING_TEST] Found ${result.total} total intervals (all), ${severeBySamsaraCount} severe (by Samsara severityLevel)`,
+      `[SEVERE_SPEEDING_TEST] Found ${result.total} total intervals (all), ${severeBySamsaraCount} severe/heavy (by Samsara severityLevel)`,
     );
     
-    // Filter by Samsara severityLevel === 'severe' (matches UI Safety Inbox "Severe Speeding")
-    const severeByApi: SpeedingInterval[] = result.intervals.filter(
-      (i) => (i.severityLevel || '').toLowerCase().trim() === 'severe',
+    // Filter by Samsara severityLevel in ['severe','heavy'] (UI can surface both as high-risk)
+    const severeByApi: SpeedingInterval[] = result.intervals.filter((i) => {
+      const sev = (i.severityLevel || '').toLowerCase().trim();
+      return sev === 'severe' || sev === 'heavy';
+    });
+    console.log(
+      `[SEVERE_SPEEDING_TEST] Severe-by-API (severityLevel in [severe,heavy]): ${severeByApi.length} intervals`,
     );
-    console.log(`[SEVERE_SPEEDING_TEST] Severe-by-API (severityLevel=severe): ${severeByApi.length} intervals`);
 
     if (result.intervals.length === 0) {
       await ctx.reply(
@@ -1365,8 +1369,8 @@ async function handleSevereSpeedingTest(ctx: any) {
 
     if (severeByApi.length === 0) {
       await ctx.reply(
-        `✅ No SEVERE speeding intervals found in the last 12 hours.\n` +
-          `Total intervals: ${result.total}, Severe by API: ${severeBySamsaraCount}`,
+        `✅ No SEVERE/HEAVY speeding intervals found in the last 12 hours.\n` +
+          `Total intervals: ${result.total}, Severe/Heavy by API: ${severeBySamsaraCount}`,
         { parse_mode: undefined },
       );
       return;
