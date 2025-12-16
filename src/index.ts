@@ -1212,13 +1212,14 @@ async function checkAndNotifySafetyEvents() {
  * 
  * Usage: /severe_speeding_test
  */
-bot.command('severe_speeding_test', async (ctx) => {
+async function handleSevereSpeedingTest(ctx: any) {
   // Log immediately to verify command is being called
   console.log('[SEVERE_SPEEDING_TEST] Command handler called', {
     chatId: ctx.chat?.id,
     chatType: ctx.chat?.type,
     fromId: ctx.from?.id,
     username: ctx.from?.username,
+    command: ctx.message?.text,
   });
 
   try {
@@ -1300,7 +1301,14 @@ bot.command('severe_speeding_test', async (ctx) => {
       console.error('[SEVERE_SPEEDING_TEST] Failed to send error message:', replyErr);
     }
   }
-});
+}
+
+// Register command with underscore
+bot.command('severe_speeding_test', handleSevereSpeedingTest);
+// Also register without underscore (in case Telegram normalizes it)
+bot.command('severespeedingtest', handleSevereSpeedingTest);
+// Also register as hears pattern (fallback)
+bot.hears(/^\/severe_speeding_test/i, handleSevereSpeedingTest);
 
 // ================== /safety_test ==================
 
@@ -1570,12 +1578,48 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
+// ================== ГЛОБАЛЬНАЯ ОБРАБОТКА КОМАНД (для отладки) ==================
+
+// Log all incoming commands to help debug
+bot.use(async (ctx, next) => {
+  if (ctx.message && 'text' in ctx.message && ctx.message.text?.startsWith('/')) {
+    console.log('[BOT] Command received:', {
+      text: ctx.message.text,
+      chatId: ctx.chat?.id,
+      chatType: ctx.chat?.type,
+      fromId: ctx.from?.id,
+    });
+  }
+  return next();
+});
+
 // ================== СТАРТ БОТА ==================
 
 bot.launch().then(async () => {
   console.log('✅ PTI bot is running...');
+  console.log('[BOT] Registered commands:', [
+    'debug_safety',
+    'mark_pti_done',
+    'update_truck_names',
+    'ping',
+    'id',
+    'pti_en',
+    'pti_ru',
+    'pti_uz',
+    'setmention',
+    'getmention',
+    'setdriver',
+    'getdriver',
+    'cleardriver',
+    'severe_speeding_test',
+    'safety_test',
+    'test_speeding',
+  ].join(', '));
   // Update truckNames for all chats on startup (so they're visible in Prisma Studio)
   await updateAllChatTruckNames();
+}).catch((err) => {
+  console.error('❌ Failed to launch bot:', err);
+  process.exit(1);
 });
 
 // Для корректной остановки (telegraf рекомендует)
