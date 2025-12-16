@@ -41,7 +41,7 @@ import {
 import { requireAdminPrivateChat } from './guards/isAdmin';
 import { handleDebugSafety } from './commands/debugSafety';
 import { fetchSpeedingIntervals, fetchSpeedingIntervalsWithSlidingWindow } from './services/samsaraSpeeding';
-import { getAllVehicleAssetIds, getVehicleNameById, getAllVehiclesInfo } from './services/samsaraVehicles';
+import { getAllVehicleAssetIds, getVehicleNameById } from './services/samsaraVehicles';
 import {
   normalizeSafetyEvents,
   normalizeSpeedingIntervals,
@@ -962,9 +962,6 @@ async function checkAndNotifySafetyEvents() {
     `🚨 Checking Samsara events (last ${SAFETY_LOOKBACK_MINUTES} min)...`,
   );
 
-  // Ensure vehicles cache is populated for name lookup
-  await getAllVehiclesInfo();
-
   // Calculate time window for safety events (60 minutes)
   const now = new Date();
   const from = new Date(now.getTime() - SAFETY_LOOKBACK_MINUTES * 60 * 1000);
@@ -1140,13 +1137,9 @@ async function checkAndNotifySafetyEvents() {
     }
 
     // Get vehicle name: try vehicleName field, then assetId lookup, then assetId as fallback
-    let vehicleName: string = event.vehicleName || '';
+    let vehicleName = event.vehicleName;
     if (!vehicleName && event.assetId) {
-      const cachedName = getVehicleNameById(event.assetId);
-      vehicleName = cachedName || '';
-    }
-    if (!vehicleName && event.assetId) {
-      vehicleName = event.assetId;
+      vehicleName = getVehicleNameById(event.assetId) || event.assetId;
     }
     if (!vehicleName) {
       vehicleName = 'Unknown';
@@ -1211,265 +1204,54 @@ async function checkAndNotifySafetyEvents() {
   }
 }
 
-// ================== /severe_speeding_test ==================
-
-/**
- * Test command to check severe speeding events from the last 6 hours.
- * Sends individual messages for each severe speeding event (like /safety_test).
- * 
- * Usage: /severe_speeding_test
- */
-async function handleSevereSpeedingTest(ctx: any) {
-  // Log immediately to verify command is being called
-  console.log('[SEVERE_SPEEDING_TEST] Command handler called', {
-    chatId: ctx.chat?.id,
-    chatType: ctx.chat?.type,
-    fromId: ctx.from?.id,
-    username: ctx.from?.username,
-    command: ctx.message?.text,
-  });
-
-  try {
-    // Send immediate response first
-    await ctx.reply(
-      '🔍 Checking severe speeding events from Samsara (last 3 hours)...',
-    );
-    console.log('[SEVERE_SPEEDING_TEST] Initial reply sent');
-
-    // Use 3-hour window (not 12 hours like cron)
-    const now = new Date();
-    const from = new Date(now.getTime() - 3 * 60 * 60 * 1000); // 3 hours ago
-    
-    console.log(`[SEVERE_SPEEDING_TEST] Fetching intervals from ${from.toISOString()} to ${now.toISOString()}`);
-    
-    // Fetch intervals for last 3 hours
-    const result = await fetchSpeedingIntervals({ from, to: now });
-    
-    console.log(`[SEVERE_SPEEDING_TEST] Found ${result.total} total intervals, ${result.severe.length} severe`);
-    
-    if (result.severe.length === 0) {
-      await ctx.reply(`✅ No severe speeding events found in the last 3 hours.\nTotal intervals: ${result.total}`);
-      return;
-    }
-
-    // Normalize to UnifiedEvent format
-    const normalized = normalizeSpeedingIntervals(result.severe);
-    console.log(`[SEVERE_SPEEDING_TEST] Normalized ${normalized.length} events`);
-
-    // Filter: only events from last 3 hours AND not already sent
-    const threeHoursAgo = from.getTime();
-    const recentAndNew: UnifiedEvent[] = [];
-    
-    for (const event of normalized) {
-      const eventTime = new Date(event.occurredAt).getTime();
-      
-      // Check if event is within last 3 hours
-      if (eventTime < threeHoursAgo) {
-        console.log(`[SEVERE_SPEEDING_TEST] Skipping event ${event.id} - older than 3 hours (${event.occurredAt})`);
-        continue;
-      }
-      
-      // Check deduplication: skip if already sent
-      const alreadySent = await isEventSent(event.id);
-      if (alreadySent) {
-        console.log(`[SEVERE_SPEEDING_TEST] Skipping event ${event.id} - already sent`);
-        continue;
-      }
-      
-      recentAndNew.push(event);
-    }
-    
-    console.log(`[SEVERE_SPEEDING_TEST] After filtering (last 3h + dedup): ${recentAndNew.length} events to send`);
-    
-    if (recentAndNew.length === 0) {
-      await ctx.reply(`✅ No new severe speeding events in the last 3 hours.\nFound ${result.severe.length} severe events, but all were either older than 3 hours or already sent.`);
-      return;
-    }
-
-    const chatId = ctx.chat?.id;
-    if (!chatId) {
-      await ctx.reply('❌ Could not determine chat ID.');
-      return;
-    }
-
-    // Send individual message for each severe speeding event (like /safety_test)
-    // First, ensure vehicles cache is populated for name lookup
-    const { getAllVehiclesInfo } = await import('./services/samsaraVehicles');
-    await getAllVehiclesInfo(); // This will populate the cache if needed
-    
-    let sentCount = 0;
-    for (const event of recentAndNew) {
-      // Get vehicle name - try multiple sources
-      let vehicleName: string = event.vehicleName || '';
-      if (!vehicleName && event.assetId) {
-        const cachedName = getVehicleNameById(event.assetId);
-        vehicleName = cachedName || '';
-      }
-      // If still no name, use assetId as fallback (but this shouldn't happen if cache is populated)
-      if (!vehicleName && event.assetId) {
-        vehicleName = event.assetId;
-      }
-      if (!vehicleName) {
-        vehicleName = 'Unknown';
-      }
-
-      // Format message using the same function as cron
-      const message = formatSevereSpeedingMessage(event, vehicleName);
-
-      try {
-        await bot.telegram.sendMessage(chatId, message, {
-          parse_mode: undefined, // Plain text
-        });
-        
-        // Mark as sent (dedup)
-        await markEventSent(event.id, event.type);
-        
-        sentCount++;
-        console.log(`[SEVERE_SPEEDING_TEST] Sent event ${event.id} for vehicle ${vehicleName}`);
-      } catch (err: any) {
-        const errorMsg = err.response?.description || err.message || 'Unknown error';
-        console.error(`[SEVERE_SPEEDING_TEST] Failed to send event ${event.id}:`, errorMsg);
-        await ctx.reply(
-          `⚠️ Failed to send severe speeding event ${event.id}: ${errorMsg}`,
-        );
-      }
-    }
-
-    if (sentCount > 0) {
-      console.log(`[SEVERE_SPEEDING_TEST] Successfully sent ${sentCount} event(s)`);
-    } else if (normalized.length > 0) {
-      await ctx.reply(`⚠️ Found ${normalized.length} events but failed to send all of them.`);
-    }
-  } catch (err: any) {
-    const errorMsg = err.response?.data || err.message || String(err);
-    console.error('[SEVERE_SPEEDING_TEST] Error:', err);
-    try {
-      await ctx.reply(
-        `❌ Error fetching severe speeding events: ${errorMsg}`,
-        { parse_mode: undefined }
-      );
-    } catch (replyErr) {
-      console.error('[SEVERE_SPEEDING_TEST] Failed to send error message:', replyErr);
-    }
-  }
-}
-
-// Register command with underscore
-console.log('[BOT] Registering command: severe_speeding_test');
-bot.command('severe_speeding_test', handleSevereSpeedingTest);
-// Also register without underscore (in case Telegram normalizes it)
-bot.command('severespeedingtest', handleSevereSpeedingTest);
-// Also register as hears pattern (fallback)
-bot.hears(/^\/severe_speeding_test/i, handleSevereSpeedingTest);
-console.log('[BOT] Command severe_speeding_test registered successfully');
-
 // ================== /safety_test ==================
 
 bot.command('safety_test', async (ctx) => {
   await ctx.reply(
-    '🔍 Checking recent safety events from Samsara (last 60 min, only serious ones) and severe speeding (last 3 hours)...',
+    '🔍 Checking recent safety events from Samsara (last 60 min, only serious ones)...',
   );
 
+  const events = await getRecentSafetyEvents(SAFETY_LOOKBACK_MINUTES);
+
+  if (!events.length) {
+    await ctx.reply('✅ No safety events in the last 60 minutes (from API).');
+    return;
+  }
+
+  const relevant = events.filter(isRelevantEvent);
+
+  if (!relevant.length) {
+    await ctx.reply(
+      '✅ No relevant safety events (only Following Distance / minor stuff).',
+    );
+    return;
+  }
+
+  const top = relevant.slice(0, 5);
   const chatId = ctx.chat?.id;
+
   if (!chatId) {
     await ctx.reply('❌ Could not determine chat ID.');
     return;
   }
 
-  // Fetch safety events (last 60 minutes)
-  const events = await getRecentSafetyEvents(SAFETY_LOOKBACK_MINUTES);
-  const relevant = events.filter(isRelevantEvent);
-
-  // Fetch severe speeding events (last 3 hours)
-  // Use fetchSpeedingIntervals which filters by severityLevel === 'severe'
-  const now = new Date();
-  const fromSpeeding = new Date(now.getTime() - 3 * 60 * 60 * 1000); // 3 hours
-  console.log(`[SAFETY_TEST] Fetching severe speeding from ${fromSpeeding.toISOString()} to ${now.toISOString()}`);
-  
-  let normalizedSpeeding: UnifiedEvent[] = [];
-  try {
-    const speedingResult = await fetchSpeedingIntervals({ from: fromSpeeding, to: now });
-    console.log(`[SAFETY_TEST] Speeding result: total=${speedingResult.total}, severe=${speedingResult.severe.length}`);
-    
-    // Log sample severe intervals for debugging
-    if (speedingResult.severe.length > 0) {
-      const sample = speedingResult.severe[0];
-      console.log(`[SAFETY_TEST] Sample severe interval:`, {
-        assetId: sample.assetId,
-        severityLevel: sample.severityLevel,
-        maxSpeedMph: sample.maxSpeedMph,
-        speedLimitMph: sample.speedLimitMph,
-        startTime: sample.startTime,
-      });
-    }
-    
-    const severeSpeedingIntervals = speedingResult.severe;
-    normalizedSpeeding = normalizeSpeedingIntervals(severeSpeedingIntervals);
-    console.log(`[SAFETY_TEST] Normalized severe speeding: ${normalizedSpeeding.length} events`);
-  } catch (err: any) {
-    console.error(`[SAFETY_TEST] Error fetching severe speeding:`, err);
-    normalizedSpeeding = [];
-  }
-
-  // Check if we have any events to show
-  if (!relevant.length && normalizedSpeeding.length === 0) {
-    await ctx.reply(
-      '✅ No relevant safety events (last 60 min) or severe speeding events (last 3 hours).',
-    );
-    return;
-  }
-
-  // Send safety events (same as before)
-  if (relevant.length > 0) {
-  const top = relevant.slice(0, 5);
+  // Use shared helper function (same as cron)
+  // Note: /safety_test doesn't add driver mentions, so we use caption directly
   for (const ev of top) {
-      const { caption } = buildSafetyPayload(ev);
-      
-      // Use shared helper to ensure same behavior as cron
-      const result = await sendSafetyAlertWithVideo(
-        ev,
-        chatId,
+    const { caption } = buildSafetyPayload(ev);
+    
+    // Use shared helper to ensure same behavior as cron
+    const result = await sendSafetyAlertWithVideo(
+      ev,
+      chatId,
         caption,
-        false // Not a dry run for manual test
+      false // Not a dry run for manual test
+    );
+
+    if (!result.success) {
+      await ctx.reply(
+        `⚠️ Failed to send event ${ev.id}: ${result.error || 'Unknown error'}`,
       );
-
-      if (!result.success) {
-        await ctx.reply(
-          `⚠️ Failed to send event ${ev.id}: ${result.error || 'Unknown error'}`,
-        );
-      }
-    }
-  }
-
-  // Send severe speeding events (same format as cron)
-  if (normalizedSpeeding.length > 0) {
-    for (const event of normalizedSpeeding) {
-      // Get vehicle name
-      let vehicleName: string = event.vehicleName || '';
-      if (!vehicleName && event.assetId) {
-        const cachedName = getVehicleNameById(event.assetId);
-        vehicleName = cachedName || '';
-      }
-      if (!vehicleName && event.assetId) {
-        vehicleName = event.assetId;
-      }
-      if (!vehicleName) {
-        vehicleName = 'Unknown';
-      }
-
-      // Format message using the same function as cron
-      const message = formatSevereSpeedingMessage(event, vehicleName);
-
-      try {
-        await bot.telegram.sendMessage(chatId, message, {
-          parse_mode: undefined, // Plain text
-        });
-      } catch (err: any) {
-        const errorMsg = err.response?.description || err.message || 'Unknown error';
-        await ctx.reply(
-          `⚠️ Failed to send severe speeding event ${event.id}: ${errorMsg}`,
-        );
-      }
     }
   }
 });
@@ -1635,53 +1417,12 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
-// ================== ГЛОБАЛЬНАЯ ОБРАБОТКА КОМАНД (для отладки) ==================
-
-// Log all incoming commands to help debug
-bot.use(async (ctx, next) => {
-  if (ctx.message && 'text' in ctx.message && ctx.message.text?.startsWith('/')) {
-    console.log('[BOT] Command received:', {
-      text: ctx.message.text,
-      chatId: ctx.chat?.id,
-      chatType: ctx.chat?.type,
-      fromId: ctx.from?.id,
-    });
-  }
-  return next();
-});
-
 // ================== СТАРТ БОТА ==================
 
 bot.launch().then(async () => {
   console.log('✅ PTI bot is running...');
-  console.log('[BOT] Registered commands:', [
-    'debug_safety',
-    'mark_pti_done',
-    'update_truck_names',
-    'ping',
-    'id',
-    'pti_en',
-    'pti_ru',
-    'pti_uz',
-    'setmention',
-    'getmention',
-    'setdriver',
-    'getdriver',
-    'cleardriver',
-    'severe_speeding_test',
-    'safety_test',
-    'test_speeding',
-  ].join(', '));
   // Update truckNames for all chats on startup (so they're visible in Prisma Studio)
-  // Don't block bot startup if this fails
-  try {
-    await updateAllChatTruckNames();
-  } catch (err) {
-    console.error('⚠️ Warning: Failed to update truckNames on startup (non-critical):', err);
-  }
-}).catch((err) => {
-  console.error('❌ Failed to launch bot:', err);
-  process.exit(1);
+  await updateAllChatTruckNames();
 });
 
 // Для корректной остановки (telegraf рекомендует)
