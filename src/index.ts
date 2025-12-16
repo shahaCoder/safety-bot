@@ -41,7 +41,7 @@ import {
 import { requireAdminPrivateChat } from './guards/isAdmin';
 import { handleDebugSafety } from './commands/debugSafety';
 import { fetchSpeedingIntervals, fetchSpeedingIntervalsWithSlidingWindow, SpeedingInterval } from './services/samsaraSpeeding';
-import { getAllVehicleAssetIds, getVehicleNameById } from './services/samsaraVehicles';
+import { getAllVehicleAssetIds, getVehicleNameById, getAllVehiclesInfo, VehicleInfo } from './services/samsaraVehicles';
 import {
   normalizeSafetyEvents,
   normalizeSpeedingIntervals,
@@ -1521,7 +1521,7 @@ async function getAssetIdsForChat(chat: Chat & { trucks?: any[] }): Promise<stri
     if (!truckName) continue;
 
     // Find vehicle by name in cache
-    const vehicle = vehicles.find((v) => v.name === truckName);
+    const vehicle = vehicles.find((v: VehicleInfo) => v.name === truckName);
     if (vehicle && vehicle.id) {
       assetIds.push(vehicle.id);
     }
