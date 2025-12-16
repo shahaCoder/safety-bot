@@ -167,10 +167,16 @@ async function fetchSpeedingIntervalsForWindow(
       allIntervals.push(flattenedInterval);
     }
 
-    // Check for pagination
+    // Check for pagination (Samsara AI recommendation: always check nextCursor)
     cursor = res.data?.pagination?.nextCursor;
     hasMore = !!cursor && flatIntervals.length > 0;
     pageCount++;
+    
+    if (hasMore) {
+      console.log(
+        `[SAMSARA][SPEEDING] Chunk ${chunkIdx + 1}/${totalChunks}: Page ${pageCount}, cursor exists, fetching next page...`
+      );
+    }
   }
 
   return {
@@ -436,13 +442,15 @@ export async function fetchSpeedingIntervalsWithSlidingWindow(
   const allFlattenedIntervals: SpeedingInterval[] = [];
   const severeIntervals: SpeedingInterval[] = [];
 
-  // Порог по превышению: over = actualSpeed - speedLimit
-  // Если over >= threshold → считаем уведомлением
+  // Configuration: use Samsara's severityLevel as primary filter
+  // Optionally apply custom threshold as additional filter
+  const useCustomThreshold = process.env.SPEEDING_USE_CUSTOM_THRESHOLD === 'true';
   const overThresholdMph = parseFloat(
     process.env.SPEEDING_OVER_THRESHOLD_MPH || '15',
   );
+
   console.log(
-    `[SAMSARA][SPEEDING] Using over-threshold=${overThresholdMph} mph for alerts`,
+    `[SAMSARA][SPEEDING] Filter strategy: severityLevel='severe' (primary)${useCustomThreshold ? ` + custom threshold >=${overThresholdMph}mph (additional)` : ''}`
   );
 
   // Process each chunk
@@ -462,15 +470,35 @@ export async function fetchSpeedingIntervalsWithSlidingWindow(
       for (const interval of result.intervals) {
         allFlattenedIntervals.push(interval);
 
-        // Фильтруем по нашему порогу, а не по severityLevel клиента
-        const actual = interval.maxSpeedMph;
-        const limit = interval.speedLimitMph;
-        if (actual != null && limit != null) {
-          const over = actual - limit;
-          if (over >= overThresholdMph) {
-            severeIntervals.push(interval);
+        // PRIMARY FILTER: Use Samsara's severityLevel === 'severe'
+        // This is what Samsara AI recommends - they determine severity based on
+        // both speed difference AND duration, which we can't replicate accurately
+        const severityLevel = (interval.severityLevel || '').toLowerCase().trim();
+        const isSevereBySamsara = severityLevel === 'severe';
+
+        if (!isSevereBySamsara) {
+          continue; // Skip if not marked as severe by Samsara
+        }
+
+        // OPTIONAL ADDITIONAL FILTER: Custom threshold check
+        // Only applied if SPEEDING_USE_CUSTOM_THRESHOLD=true
+        if (useCustomThreshold) {
+          const actual = interval.maxSpeedMph;
+          const limit = interval.speedLimitMph;
+          if (actual != null && limit != null) {
+            const over = actual - limit;
+            if (over < overThresholdMph) {
+              // Samsara marked it as severe, but our custom threshold is stricter
+              console.log(
+                `[SAMSARA][SPEEDING] Skipping severe interval (assetId=${interval.assetId}, over=${over.toFixed(1)}mph) - below custom threshold ${overThresholdMph}mph`
+              );
+              continue;
+            }
           }
         }
+
+        // Passed all filters - add to severe intervals
+        severeIntervals.push(interval);
       }
     } catch (err: any) {
       console.error(
@@ -494,9 +522,20 @@ export async function fetchSpeedingIntervalsWithSlidingWindow(
     }
   }
 
+  // Detailed logging for debugging
+  const severeByLevel = allFlattenedIntervals.filter(
+    (i) => (i.severityLevel || '').toLowerCase().trim() === 'severe'
+  ).length;
+  
   console.log(
-    `[SAMSARA][SPEEDING] totalIntervals=${allFlattenedIntervals.length} severe=${severeIntervals.length} newToPost=${newToPost.length}`
+    `[SAMSARA][SPEEDING] Summary: totalIntervals=${allFlattenedIntervals.length} severeByLevel=${severeByLevel} severeAfterFilters=${severeIntervals.length} newToPost=${newToPost.length}`
   );
+  
+  if (severeByLevel > 0 && severeIntervals.length === 0 && useCustomThreshold) {
+    console.warn(
+      `[SAMSARA][SPEEDING] ⚠️ Found ${severeByLevel} severe intervals by Samsara, but all filtered out by custom threshold. Consider adjusting SPEEDING_OVER_THRESHOLD_MPH or disabling SPEEDING_USE_CUSTOM_THRESHOLD.`
+    );
+  }
 
   return {
     total: allFlattenedIntervals.length,
