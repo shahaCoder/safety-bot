@@ -1231,7 +1231,6 @@ async function checkAndNotifySafetyEvents() {
  * 
  * Usage: /severe_speeding_test
  */
-console.log('[BOT] Registering command: severe_speeding_test');
 // Also register without underscore for compatibility
 bot.command(['severe_speeding_test', 'severespeedingtest'], async (ctx) => {
   // Log immediately to verify command is being called
