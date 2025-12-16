@@ -326,9 +326,13 @@ export async function fetchSpeedingIntervals(
     for (const interval of chunkIntervals) {
       allFlattenedIntervals.push(interval);
 
-      // Filter for severe: severityLevel?.toLowerCase() === 'severe'
+      // PRIMARY FILTER: Use Samsara's severityLevel === 'severe' (same as fetchSpeedingIntervalsWithSlidingWindow)
+      // This is what Samsara AI recommends - they determine severity based on
+      // both speed difference AND duration, which we can't replicate accurately
       const severityLevel = (interval.severityLevel || '').toLowerCase().trim();
-      if (severityLevel === 'severe') {
+      const isSevereBySamsara = severityLevel === 'severe';
+
+      if (isSevereBySamsara) {
         severeIntervals.push(interval);
       }
     }

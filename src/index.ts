@@ -1320,11 +1320,35 @@ bot.command('safety_test', async (ctx) => {
   const relevant = events.filter(isRelevantEvent);
 
   // Fetch severe speeding events (last 3 hours)
+  // Use fetchSpeedingIntervals which filters by severityLevel === 'severe'
   const now = new Date();
   const fromSpeeding = new Date(now.getTime() - 3 * 60 * 60 * 1000); // 3 hours
-  const speedingResult = await fetchSpeedingIntervals({ from: fromSpeeding, to: now });
-  const severeSpeedingIntervals = speedingResult.severe;
-  const normalizedSpeeding = normalizeSpeedingIntervals(severeSpeedingIntervals);
+  console.log(`[SAFETY_TEST] Fetching severe speeding from ${fromSpeeding.toISOString()} to ${now.toISOString()}`);
+  
+  let normalizedSpeeding: UnifiedEvent[] = [];
+  try {
+    const speedingResult = await fetchSpeedingIntervals({ from: fromSpeeding, to: now });
+    console.log(`[SAFETY_TEST] Speeding result: total=${speedingResult.total}, severe=${speedingResult.severe.length}`);
+    
+    // Log sample severe intervals for debugging
+    if (speedingResult.severe.length > 0) {
+      const sample = speedingResult.severe[0];
+      console.log(`[SAFETY_TEST] Sample severe interval:`, {
+        assetId: sample.assetId,
+        severityLevel: sample.severityLevel,
+        maxSpeedMph: sample.maxSpeedMph,
+        speedLimitMph: sample.speedLimitMph,
+        startTime: sample.startTime,
+      });
+    }
+    
+    const severeSpeedingIntervals = speedingResult.severe;
+    normalizedSpeeding = normalizeSpeedingIntervals(severeSpeedingIntervals);
+    console.log(`[SAFETY_TEST] Normalized severe speeding: ${normalizedSpeeding.length} events`);
+  } catch (err: any) {
+    console.error(`[SAFETY_TEST] Error fetching severe speeding:`, err);
+    normalizedSpeeding = [];
+  }
 
   // Check if we have any events to show
   if (!relevant.length && normalizedSpeeding.length === 0) {
