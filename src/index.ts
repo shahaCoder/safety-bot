@@ -1322,14 +1322,13 @@ async function handleSevereSpeedingTest(ctx: any) {
   try {
     const rawText: string = ctx.message?.text || '';
     const force = /\bforce\b/i.test(rawText); // /severe_speeding_test force
-    const sendHere = /\bhere\b/i.test(rawText); // /severe_speeding_test here
+    const sendHere = true; // always send to the chat where command is invoked
 
     await ctx.reply(
-      `🔍 Checking speeding intervals from Samsara (last 12 hours)...\n` +
-        `Mode: ALL intervals\n` +
+      `🔍 Checking SEVERE speeding intervals from Samsara (last 12 hours)...\n` +
+        `Filter: severityLevel=severe\n` +
         `Delivery: THIS chat\n` +
-        `Dedup: ${force ? 'IGNORE (force)' : 'SKIP already sent (default)'}\n\n` +
-        `Tip: use \`/severe_speeding_test force\` to resend everything again.`,
+        `Dedup: ${force ? 'IGNORE (force)' : 'SKIP already sent (default)'}`,
       { parse_mode: undefined },
     );
     console.log('[SEVERE_SPEEDING_TEST] Initial reply sent');
@@ -1350,38 +1349,32 @@ async function handleSevereSpeedingTest(ctx: any) {
       `[SEVERE_SPEEDING_TEST] Found ${result.total} total intervals (all), ${severeBySamsaraCount} severe (by Samsara severityLevel)`,
     );
     
-    // Threshold used to classify "severe" by our definition (kept for summary only)
-    const overThresholdMph = parseFloat(
-      process.env.SPEEDING_OVER_THRESHOLD_MPH || '15',
+    // Filter by Samsara severityLevel === 'severe' (matches UI Safety Inbox "Severe Speeding")
+    const severeByApi: SpeedingInterval[] = result.intervals.filter(
+      (i) => (i.severityLevel || '').toLowerCase().trim() === 'severe',
     );
-    console.log(`[SEVERE_SPEEDING_TEST] Threshold for severe-by-mph: ${overThresholdMph} mph`);
-    
-    // Filter by speed over threshold (our definition of severe)
-    const severeByThreshold: SpeedingInterval[] = [];
-    for (const interval of result.intervals) {
-      const actual = interval.maxSpeedMph;
-      const limit = interval.speedLimitMph;
-      if (actual != null && limit != null) {
-        const over = actual - limit;
-        if (over >= overThresholdMph) {
-          severeByThreshold.push(interval);
-        }
-      }
-    }
-    
-    console.log(`[SEVERE_SPEEDING_TEST] Severe-by-threshold (>=${overThresholdMph} mph): ${severeByThreshold.length} intervals`);
+    console.log(`[SEVERE_SPEEDING_TEST] Severe-by-API (severityLevel=severe): ${severeByApi.length} intervals`);
 
     if (result.intervals.length === 0) {
       await ctx.reply(
         `✅ No speeding intervals found in the last 12 hours.\n` +
-          `Total intervals: ${result.total}, Severe by API: ${severeBySamsaraCount}, Severe by threshold (>=${overThresholdMph} mph): ${severeByThreshold.length}`,
+          `Total intervals: ${result.total}, Severe by API: ${severeBySamsaraCount}`,
       );
       return;
     }
 
-    // Normalize to UnifiedEvent format (ALL intervals)
-    const normalized = normalizeSpeedingIntervals(result.intervals);
-    console.log(`[SEVERE_SPEEDING_TEST] Normalized ${normalized.length} interval(s)`);
+    if (severeByApi.length === 0) {
+      await ctx.reply(
+        `✅ No SEVERE speeding intervals found in the last 12 hours.\n` +
+          `Total intervals: ${result.total}, Severe by API: ${severeBySamsaraCount}`,
+        { parse_mode: undefined },
+      );
+      return;
+    }
+
+    // Normalize to UnifiedEvent format (SEVERE intervals only)
+    const normalized = normalizeSpeedingIntervals(severeByApi);
+    console.log(`[SEVERE_SPEEDING_TEST] Normalized ${normalized.length} severe interval(s)`);
 
     // Ensure vehicles cache is populated for name lookup
     const { getAllVehiclesInfo } = await import('./services/samsaraVehicles');
@@ -1426,23 +1419,38 @@ async function handleSevereSpeedingTest(ctx: any) {
           .join('\n');
 
       await ctx.reply(
-        `✅ No new speeding intervals to show in the last 12 hours.\n` +
+        `✅ No NEW severe speeding intervals to send in the last 12 hours.\n` +
           `Total intervals: ${result.total}\n` +
           `Severe by API: ${severeBySamsaraCount}\n` +
-          `Severe by threshold (>=${overThresholdMph} mph): ${severeByThreshold.length}\n` +
           `Skipped as older than 12h: ${skippedOld.length}\n` +
           `Skipped as already sent: ${skippedSent.length}\n` +
           (skippedSent.length
             ? `\nExamples already sent:\n${example(skippedSent)}`
             : '') +
           (skippedOld.length ? `\nExamples older:\n${example(skippedOld)}` : '') +
-          `\n\nTip: run \`/severe_speeding_test force\` to resend everything again.`,
+          `\n\nTip: run \`/severe_speeding_test force\` to resend ignoring dedup.`,
         { parse_mode: undefined },
       );
       return;
     }
 
-    // Send intervals to THIS chat (for easy comparison with Insomnia)
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    async function sendMessageWith429Retry(chatId: number, text: string) {
+      try {
+        await bot.telegram.sendMessage(chatId, text, { parse_mode: undefined });
+        return true;
+      } catch (err: any) {
+        const retryAfter = err?.response?.parameters?.retry_after;
+        if (err?.response?.error_code === 429 && typeof retryAfter === 'number') {
+          console.warn(`[SEVERE_SPEEDING_TEST] 429 rate limit, waiting ${retryAfter}s then retrying...`);
+          await sleep((retryAfter + 1) * 1000);
+          await bot.telegram.sendMessage(chatId, text, { parse_mode: undefined });
+          return true;
+        }
+        throw err;
+      }
+    }
+
     let sentCount = 0;
     for (const event of recentAndNew) {
       // Get vehicle name
@@ -1458,6 +1466,8 @@ async function handleSevereSpeedingTest(ctx: any) {
         vehicleName = 'Unknown';
       }
 
+      // Decide where to send:
+      // Always send into current chat (per user request)
       const targetChatId = Number(ctx.chat?.id);
 
       if (!targetChatId) {
@@ -1465,18 +1475,19 @@ async function handleSevereSpeedingTest(ctx: any) {
         continue;
       }
 
-      const message = formatSpeedingIntervalMessage(event, vehicleName);
+      // Use the severe template for severe events
+      const message = formatSevereSpeedingMessage(event, vehicleName);
 
       try {
-        await bot.telegram.sendMessage(targetChatId, message, {
-          parse_mode: undefined, // Plain text
-        });
+        await sendMessageWith429Retry(targetChatId, message);
+        // small delay to reduce Telegram burst limits
+        await sleep(150);
         
         // Mark as sent (dedup)
         await markEventSent(event.id, event.type);
         
         // Log event to database
-        const behavior = 'Speeding';
+        const behavior = 'Severe Speeding';
         const timeLocal = convertToNewYorkTime(event.occurredAt);
         await logUnifiedEvent(event, targetChatId, behavior, null, timeLocal);
         
@@ -1488,17 +1499,33 @@ async function handleSevereSpeedingTest(ctx: any) {
         const errorMsg = err.response?.description || err.message || 'Unknown error';
         console.error(`[SEVERE_SPEEDING_TEST] Failed to send event ${event.id} to chatId=${targetChatId}:`, errorMsg);
         // Still log the event even if sending failed
-        const behavior = 'Speeding';
+        const behavior = 'Severe Speeding';
         const timeLocal = convertToNewYorkTime(event.occurredAt);
         await logUnifiedEvent(event, targetChatId, behavior, null, timeLocal);
       }
     }
 
     if (sentCount > 0) {
-      await ctx.reply(`✅ Successfully sent ${sentCount} severe speeding event(s) to their respective groups.`);
+      // Send summary back to command chat (may fail if rate-limited; ignore)
+      try {
+        await ctx.reply(
+          `✅ Sent ${sentCount} SEVERE speeding event(s). ` +
+            `Severe found: ${severeByApi.length}, skipped sent: ${skippedSent.length}, skipped old: ${skippedOld.length}.`,
+          { parse_mode: undefined },
+        );
+      } catch (e) {
+        console.warn('[SEVERE_SPEEDING_TEST] Failed to send summary reply (likely rate limit).');
+      }
       console.log(`[SEVERE_SPEEDING_TEST] Successfully sent ${sentCount} event(s)`);
     } else {
-      await ctx.reply(`⚠️ Found ${recentAndNew.length} events but failed to send all of them (check logs for details).`);
+      try {
+        await ctx.reply(
+          `⚠️ Found ${recentAndNew.length} SEVERE events but failed to send them (check logs).`,
+          { parse_mode: undefined },
+        );
+      } catch {
+        console.warn('[SEVERE_SPEEDING_TEST] Failed to send failure reply (likely rate limit).');
+      }
     }
   } catch (err: any) {
     const errorMsg = err.response?.data || err.message || String(err);
