@@ -1274,11 +1274,11 @@ async function handleSevereSpeedingTest(ctx: any) {
   });
 
   try {
-    await ctx.reply('🔍 Checking severe speeding events from Samsara (last 6 hours)...');
+    await ctx.reply('🔍 Checking severe speeding events from Samsara (last 12 hours)...');
     console.log('[SEVERE_SPEEDING_TEST] Initial reply sent');
 
     const now = new Date();
-    const from = new Date(now.getTime() - 6 * 60 * 60 * 1000); // 6 hours ago
+    const from = new Date(now.getTime() - 12 * 60 * 60 * 1000); // 12 hours ago
     
     console.log(`[SEVERE_SPEEDING_TEST] Fetching intervals from ${from.toISOString()} to ${now.toISOString()}`);
     
@@ -1317,7 +1317,7 @@ async function handleSevereSpeedingTest(ctx: any) {
     
     if (severeByThreshold.length === 0) {
       await ctx.reply(
-        `✅ No severe speeding events found in the last 6 hours (threshold: >=${overThresholdMph} mph).\n` +
+        `✅ No severe speeding events found in the last 12 hours (threshold: >=${overThresholdMph} mph).\n` +
         `Total intervals: ${result.total}, Severe by API: ${severeBySamsaraCount}`,
       );
       return;
@@ -1331,16 +1331,16 @@ async function handleSevereSpeedingTest(ctx: any) {
     const { getAllVehiclesInfo } = await import('./services/samsaraVehicles');
     await getAllVehiclesInfo();
     
-    // Filter: only events from last 6 hours AND not already sent
-    const sixHoursAgo = from.getTime();
+    // Filter: only events from last 12 hours AND not already sent
+    const twelveHoursAgo = from.getTime();
     const recentAndNew: UnifiedEvent[] = [];
     
     for (const event of normalized) {
       const eventTime = new Date(event.occurredAt).getTime();
       
-      // Check if event is within last 6 hours
-      if (eventTime < sixHoursAgo) {
-        console.log(`[SEVERE_SPEEDING_TEST] Skipping event ${event.id} - older than 6 hours (${event.occurredAt})`);
+      // Check if event is within last 12 hours
+      if (eventTime < twelveHoursAgo) {
+        console.log(`[SEVERE_SPEEDING_TEST] Skipping event ${event.id} - older than 12 hours (${event.occurredAt})`);
         continue;
       }
       
@@ -1354,10 +1354,10 @@ async function handleSevereSpeedingTest(ctx: any) {
       recentAndNew.push(event);
     }
     
-    console.log(`[SEVERE_SPEEDING_TEST] After filtering (last 6h + dedup): ${recentAndNew.length} events to send`);
+    console.log(`[SEVERE_SPEEDING_TEST] After filtering (last 12h + dedup): ${recentAndNew.length} events to send`);
     
     if (recentAndNew.length === 0) {
-      await ctx.reply(`✅ No new severe speeding events in the last 6 hours.\nFound ${severeByThreshold.length} severe events, but all were either older than 6 hours or already sent.`);
+      await ctx.reply(`✅ No new severe speeding events in the last 12 hours.\nFound ${severeByThreshold.length} severe events, but all were either older than 12 hours or already sent.`);
       return;
     }
 
