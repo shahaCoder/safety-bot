@@ -448,13 +448,6 @@ export async function fetchSpeedingIntervalsWithSlidingWindow(
     `[SAMSARA][SPEEDING] windowStart=${window.startTime} windowEnd=${window.endTime} (windowHours=${windowHours}, bufferMinutes=${bufferMinutes})`
   );
 
-  // Chunking configuration
-  const CHUNK_SIZE = 200;
-  const chunks: string[][] = [];
-  for (let i = 0; i < assetIds.length; i += CHUNK_SIZE) {
-    chunks.push(assetIds.slice(i, i + CHUNK_SIZE));
-  }
-
   const allFlattenedIntervals: SpeedingInterval[] = [];
   const severeIntervals: SpeedingInterval[] = [];
 
@@ -464,35 +457,39 @@ export async function fetchSpeedingIntervalsWithSlidingWindow(
     `[SAMSARA][SPEEDING] Using severityLevel in [severe, heavy] for alerts`,
   );
 
-  // Process each chunk
-  for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
-    const chunk = chunks[chunkIdx];
-    
-    try {
-      const result = await fetchSpeedingIntervalsForWindow(
-        token,
-        window,
-        chunk,
-        chunkIdx + 1,
-        chunks.length
-      );
+  // IMPORTANT: Fetch per-asset to avoid incomplete results from multi-asset requests.
+  // This matches the proven Insomnia behavior and ensures we don't miss events for other trucks.
+  const CONCURRENCY = parseInt(process.env.SPEEDING_FETCH_CONCURRENCY || '4', 10);
+  for (let i = 0; i < assetIds.length; i += CONCURRENCY) {
+    const batch = assetIds.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(
+      batch.map(async (assetId) => {
+        try {
+          return await fetchSpeedingIntervalsForWindow(
+            token,
+            window,
+            [assetId],
+            1,
+            1,
+          );
+        } catch (err: any) {
+          console.error(
+            `[SAMSARA][SPEEDING] Error fetching assetId=${assetId}:`,
+            err.response?.data || err.message
+          );
+          return { records: 0, intervals: [] as SpeedingInterval[] };
+        }
+      }),
+    );
 
-      // Add all intervals
-      for (const interval of result.intervals) {
+    for (const r of results) {
+      for (const interval of r.intervals) {
         allFlattenedIntervals.push(interval);
-
-        // Filter by Samsara severityLevel (include heavy)
         const sev = (interval.severityLevel || '').toLowerCase().trim();
         if (allowedSeverities.has(sev)) {
           severeIntervals.push(interval);
         }
       }
-    } catch (err: any) {
-      console.error(
-        `[SAMSARA][SPEEDING] Error fetching chunk ${chunkIdx + 1}/${chunks.length}:`,
-        err.response?.data || err.message
-      );
-      // Continue with next chunk
     }
   }
 
