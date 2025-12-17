@@ -416,8 +416,11 @@ export async function fetchSpeedingIntervalsWithSlidingWindow(
   }
 
   // Configuration from env vars
-  // По умолчанию берём 12 часов окна, как в целевой логике
-  const windowHours = parseInt(process.env.SPEEDING_WINDOW_HOURS || '12', 10);
+  // Минимальное окно 10 часов (чтобы не терять события из-за задержек обработки)
+  const windowHours = Math.max(
+    10,
+    parseInt(process.env.SPEEDING_WINDOW_HOURS || '10', 10),
+  );
   const bufferMinutes = parseInt(process.env.SPEEDING_BUFFER_MINUTES || '10', 10);
 
   // Calculate sliding window
@@ -455,13 +458,10 @@ export async function fetchSpeedingIntervalsWithSlidingWindow(
   const allFlattenedIntervals: SpeedingInterval[] = [];
   const severeIntervals: SpeedingInterval[] = [];
 
-  // Порог по превышению: over = actualSpeed - speedLimit
-  // Если over >= threshold → считаем уведомлением
-  const overThresholdMph = parseFloat(
-    process.env.SPEEDING_OVER_THRESHOLD_MPH || '15',
-  );
+  // Use Samsara-provided severityLevel to match UI "Severe Speeding" and include "heavy"
+  const allowedSeverities = new Set(['severe', 'heavy']);
   console.log(
-    `[SAMSARA][SPEEDING] Using over-threshold=${overThresholdMph} mph for alerts`,
+    `[SAMSARA][SPEEDING] Using severityLevel in [severe, heavy] for alerts`,
   );
 
   // Process each chunk
@@ -481,14 +481,10 @@ export async function fetchSpeedingIntervalsWithSlidingWindow(
       for (const interval of result.intervals) {
         allFlattenedIntervals.push(interval);
 
-        // Фильтруем по нашему порогу, а не по severityLevel клиента
-        const actual = interval.maxSpeedMph;
-        const limit = interval.speedLimitMph;
-        if (actual != null && limit != null) {
-          const over = actual - limit;
-          if (over >= overThresholdMph) {
-            severeIntervals.push(interval);
-          }
+        // Filter by Samsara severityLevel (include heavy)
+        const sev = (interval.severityLevel || '').toLowerCase().trim();
+        if (allowedSeverities.has(sev)) {
+          severeIntervals.push(interval);
         }
       }
     } catch (err: any) {
