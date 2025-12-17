@@ -525,13 +525,16 @@ function formatSevereSpeedingMessage(
   const actualSpeedMph = Math.round(event.details?.maxSpeedMph ?? 0);
   const overLimit = actualSpeedMph - speedLimitMph;
 
-  // Format date: "Dec 13, 2025"
+  // Format event time: "Dec 13, 2025 6:30 PM"
   const date = new Date(event.occurredAt);
   const dateLabel = date.toLocaleString('en-US', {
     timeZone: 'America/New_York',
     month: 'short',
     day: 'numeric',
     year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
   });
 
   // Format detected time: "10:15 AM"
