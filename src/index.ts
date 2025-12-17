@@ -393,7 +393,9 @@ const OTHER_SERIOUS_KEYWORDS = [
   'harsh braking',
   'yield',       // Did Not Yield
   'red light',   // Ran Red Light
-  'rolling stop' // Rolling Stop
+  'rolling stop', // Rolling Stop
+  'crash',        // Crash / Accident
+  'collision',    // Collision
 ];
 
 const ALLOWED_KEYWORDS = [...SPEEDING_KEYWORDS, ...OTHER_SERIOUS_KEYWORDS];
