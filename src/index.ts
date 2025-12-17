@@ -1530,11 +1530,11 @@ async function handleSevereSpeedingTest(ctx: any) {
         // small delay to reduce Telegram burst limits
         await sleep(150);
         
-        // Mark as sent (dedup)
-        await markEventSent(event.id, event.type);
+        // IMPORTANT: /severe_speeding_test is a manual diagnostic command.
+        // Do NOT mark events as sent here, otherwise cron will skip them and not deliver to groups.
         
-        // Log event to database
-        const behavior = 'Severe Speeding';
+        // Optional: keep a log entry for traceability (does not affect dedup)
+        const behavior = 'Severe Speeding (manual test)';
         const timeLocal = convertToNewYorkTime(event.occurredAt);
         await logUnifiedEvent(event, targetChatId, behavior, null, timeLocal);
         
