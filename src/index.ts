@@ -1382,31 +1382,34 @@ async function handleSevereSpeedingTest(ctx: any) {
       sevCounts[sev] = (sevCounts[sev] || 0) + 1;
     }
 
-    const severeBySamsaraCount = (sevCounts['severe'] || 0) + (sevCounts['heavy'] || 0);
+    const severeBySamsaraCount =
+      (sevCounts['severe'] || 0) +
+      (sevCounts['heavy'] || 0) +
+      (sevCounts['moderate'] || 0);
 
     console.log(
-      `[SEVERE_SPEEDING_TEST] Found ${result.total} total intervals (all), ${severeBySamsaraCount} severe/heavy (by Samsara severityLevel)`,
+      `[SEVERE_SPEEDING_TEST] Found ${result.total} total intervals (all), ${severeBySamsaraCount} moderate/heavy/severe (by Samsara severityLevel)`,
     );
     console.log('[SEVERE_SPEEDING_TEST] Severity distribution:', sevCounts);
     
     // Filter by requested severity levels:
-    // default: severe|heavy
+    // default: moderate|heavy|severe
     // debug: add light or moderate via command args
     const severeByApi: SpeedingInterval[] = result.intervals.filter((i) => {
       const sev = (i.severityLevel || '').toLowerCase().trim();
-      if (sev === 'severe' || sev === 'heavy') return true;
+      if (sev === 'severe' || sev === 'heavy' || sev === 'moderate') return true;
       if (includeLight && sev === 'light') return true;
       if (includeModerate && sev === 'moderate') return true;
       return false;
     });
     console.log(
-      `[SEVERE_SPEEDING_TEST] Severe-by-API (severityLevel in [severe,heavy]): ${severeByApi.length} intervals`,
+      `[SEVERE_SPEEDING_TEST] Severe-by-API (severityLevel in [moderate,heavy,severe]): ${severeByApi.length} intervals`,
     );
 
     if (result.intervals.length === 0) {
       await ctx.reply(
         `✅ No speeding intervals found in the last 12 hours.\n` +
-          `Total intervals: ${result.total}, Severe/Heavy by API: ${severeBySamsaraCount}`,
+          `Total intervals: ${result.total}, Moderate/Heavy/Severe by API: ${severeBySamsaraCount}`,
       );
       return;
     }
@@ -1416,7 +1419,7 @@ async function handleSevereSpeedingTest(ctx: any) {
         `✅ No matching speeding intervals found in the last 12 hours.\n` +
           `Total intervals: ${result.total}\n` +
           `Severity counts: severe=${sevCounts['severe'] || 0}, heavy=${sevCounts['heavy'] || 0}, moderate=${sevCounts['moderate'] || 0}, light=${sevCounts['light'] || 0}, unknown=${sevCounts['unknown'] || 0}\n` +
-          `Filter used: ${includeLight ? 'severe|heavy|light' : includeModerate ? 'severe|heavy|moderate' : 'severe|heavy'}`,
+          `Filter used: ${includeLight ? 'moderate|heavy|severe|light' : includeModerate ? 'moderate|heavy|severe|moderate' : 'moderate|heavy|severe'}`,
         { parse_mode: undefined },
       );
       return;

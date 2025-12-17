@@ -451,10 +451,10 @@ export async function fetchSpeedingIntervalsWithSlidingWindow(
   const allFlattenedIntervals: SpeedingInterval[] = [];
   const severeIntervals: SpeedingInterval[] = [];
 
-  // Use Samsara-provided severityLevel to match UI "Severe Speeding" and include "heavy"
-  const allowedSeverities = new Set(['severe', 'heavy']);
+  // Use Samsara-provided severityLevel and include moderate+heavy+severe
+  const allowedSeverities = new Set(['moderate', 'heavy', 'severe']);
   console.log(
-    `[SAMSARA][SPEEDING] Using severityLevel in [severe, heavy] for alerts`,
+    `[SAMSARA][SPEEDING] Using severityLevel in [moderate, heavy, severe] for alerts`,
   );
 
   // IMPORTANT: Fetch per-asset to avoid incomplete results from multi-asset requests.
