@@ -8,6 +8,10 @@ export interface DriverConfig {
   trucks: string[];        // названия траков из Samsara: vehicle.name
 }
 
+// NOTE: This file is DEPRECATED - chat mappings are now stored in database (prisma/seed.ts)
+// This file is kept for backward compatibility but should not be used for new mappings.
+// Multiple trucks may share the same chatId if they belong to the same driver/group.
+
 export const drivers: DriverConfig[] = [
   {
     id: 1,

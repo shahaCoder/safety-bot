@@ -1013,6 +1013,9 @@ async function checkAndNotifySafetyEvents() {
     `🚨 Checking Samsara events (last ${SAFETY_LOOKBACK_MINUTES} min)...`,
   );
 
+  // Rate limit protection: prevent spam on bot restart (max 25 events per cron run)
+  const MAX_EVENTS_PER_CRON_RUN = parseInt(process.env.MAX_EVENTS_PER_CRON_RUN || '25', 10);
+
   // Calculate time window for safety events (60 minutes)
   const now = new Date();
   const from = new Date(now.getTime() - SAFETY_LOOKBACK_MINUTES * 60 * 1000);
@@ -1045,7 +1048,15 @@ async function checkAndNotifySafetyEvents() {
   const relevantSafetyEvents = safetyEvents.filter(isRelevantEvent);
   console.log(`✅ Relevant safety events after filter: ${relevantSafetyEvents.length}`);
 
-  for (const ev of relevantSafetyEvents) {
+  // Apply rate limit protection
+  const safetyEventsToProcess = relevantSafetyEvents.slice(0, MAX_EVENTS_PER_CRON_RUN);
+  if (relevantSafetyEvents.length > MAX_EVENTS_PER_CRON_RUN) {
+    console.warn(
+      `⚠️ [RATE_LIMIT] Limiting safety events: ${relevantSafetyEvents.length} total, processing only first ${MAX_EVENTS_PER_CRON_RUN} to prevent spam`
+    );
+  }
+
+  for (const ev of safetyEventsToProcess) {
     // Check if already processed (deduplication)
     const alreadyProcessed = await isEventProcessed(ev.id);
     if (alreadyProcessed) {
@@ -1178,8 +1189,16 @@ async function checkAndNotifySafetyEvents() {
     `📊 Processing ${normalizedSpeeding.length} severe speeding intervals`
   );
 
+  // Apply rate limit protection
+  const speedingEventsToProcess = normalizedSpeeding.slice(0, MAX_EVENTS_PER_CRON_RUN);
+  if (normalizedSpeeding.length > MAX_EVENTS_PER_CRON_RUN) {
+    console.warn(
+      `⚠️ [RATE_LIMIT] Limiting speeding events: ${normalizedSpeeding.length} total, processing only first ${MAX_EVENTS_PER_CRON_RUN} to prevent spam`
+    );
+  }
+
   // Process each severe speeding interval
-  for (const event of normalizedSpeeding) {
+  for (const event of speedingEventsToProcess) {
     // Check deduplication: skip if already sent
     const alreadySent = await isEventSent(event.id);
     if (alreadySent) {
@@ -1742,6 +1761,7 @@ cron.schedule(
 // ================== SAFETY-CRON (каждую минуту) ==================
 
 cron.schedule('* * * * *', async () => {
+  const cronStartTime = Date.now();
   console.log('⏰ [CRON SAFETY] tick');
   try {
     await checkAndNotifySafetyEvents();
@@ -1751,8 +1771,15 @@ cron.schedule('* * * * *', async () => {
     if (now.getMinutes() === 0) {
       await cleanupOldSentEvents(7); // Keep 7 days of dedup keys
     }
+    
+    const cronDuration = Date.now() - cronStartTime;
+    if (cronDuration > 30000) {
+      console.warn(`⚠️ [CRON] Slow execution: ${cronDuration}ms (may indicate API delays or high event volume)`);
+    }
   } catch (err) {
     console.error('❌ Error in cron safety check', err);
+    // Don't let cron errors crash the bot - log and continue
+    // This ensures bot keeps running even if one cron run fails
   }
 });
 
@@ -1760,8 +1787,20 @@ cron.schedule('* * * * *', async () => {
 
 bot.launch().then(async () => {
   console.log('✅ PTI bot is running...');
+  console.log('📋 Bot info:', {
+    nodeVersion: process.version,
+    uptime: process.uptime(),
+    pid: process.pid,
+  });
+  
   // Update truckNames for all chats on startup (so they're visible in Prisma Studio)
   await updateAllChatTruckNames();
+  
+  // Log heartbeat every 10 minutes to verify bot is alive
+  setInterval(() => {
+    const uptimeHours = (process.uptime() / 3600).toFixed(2);
+    console.log(`💓 [HEARTBEAT] Bot alive, uptime: ${uptimeHours}h`);
+  }, 10 * 60 * 1000); // Every 10 minutes
 });
 
 // Для корректной остановки (telegraf рекомендует)
