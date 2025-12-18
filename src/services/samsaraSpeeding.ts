@@ -459,27 +459,56 @@ export async function fetchSpeedingIntervalsWithSlidingWindow(
 
   // IMPORTANT: Fetch per-asset to avoid incomplete results from multi-asset requests.
   // This matches the proven Insomnia behavior and ensures we don't miss events for other trucks.
-  const CONCURRENCY = parseInt(process.env.SPEEDING_FETCH_CONCURRENCY || '4', 10);
+  // Reduced concurrency and added delays to avoid Samsara rate limits
+  const CONCURRENCY = parseInt(process.env.SPEEDING_FETCH_CONCURRENCY || '2', 10); // Reduced from 4 to 2
+  const BATCH_DELAY_MS = parseInt(process.env.SPEEDING_BATCH_DELAY_MS || '1000', 10); // 1 second between batches
+  
+  // Helper function to retry on rate limit with exponential backoff
+  const fetchWithRetry = async (assetId: string, maxRetries = 3): Promise<{ records: number; intervals: SpeedingInterval[] }> => {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        return await fetchSpeedingIntervalsForWindow(
+          token,
+          window,
+          [assetId],
+          1,
+          1,
+        );
+      } catch (err: any) {
+        const errorMsg = err.response?.data || err.message || String(err);
+        const isRateLimit = 
+          err.response?.status === 429 ||
+          (typeof errorMsg === 'string' && errorMsg.toLowerCase().includes('rate limit')) ||
+          (typeof errorMsg === 'string' && errorMsg.toLowerCase().includes('exceeded rate limit'));
+        
+        if (isRateLimit && attempt < maxRetries - 1) {
+          // Exponential backoff: 2s, 4s, 8s
+          const waitMs = Math.pow(2, attempt + 1) * 1000;
+          console.warn(
+            `[SAMSARA][SPEEDING] Rate limit for assetId=${assetId}, attempt ${attempt + 1}/${maxRetries}, waiting ${waitMs}ms...`
+          );
+          await new Promise(resolve => setTimeout(resolve, waitMs));
+          continue; // Retry
+        }
+        
+        // Not rate limit, or max retries reached
+        console.error(
+          `[SAMSARA][SPEEDING] Error fetching assetId=${assetId} (attempt ${attempt + 1}/${maxRetries}):`,
+          errorMsg
+        );
+        return { records: 0, intervals: [] as SpeedingInterval[] };
+      }
+    }
+    return { records: 0, intervals: [] as SpeedingInterval[] };
+  };
+
+  // Process assets sequentially in batches with delays to avoid rate limits
   for (let i = 0; i < assetIds.length; i += CONCURRENCY) {
     const batch = assetIds.slice(i, i + CONCURRENCY);
+    
+    // Process batch with limited concurrency
     const results = await Promise.all(
-      batch.map(async (assetId) => {
-        try {
-          return await fetchSpeedingIntervalsForWindow(
-            token,
-            window,
-            [assetId],
-            1,
-            1,
-          );
-        } catch (err: any) {
-          console.error(
-            `[SAMSARA][SPEEDING] Error fetching assetId=${assetId}:`,
-            err.response?.data || err.message
-          );
-          return { records: 0, intervals: [] as SpeedingInterval[] };
-        }
-      }),
+      batch.map(async (assetId) => await fetchWithRetry(assetId))
     );
 
     for (const r of results) {
@@ -490,6 +519,11 @@ export async function fetchSpeedingIntervalsWithSlidingWindow(
           severeIntervals.push(interval);
         }
       }
+    }
+    
+    // Add delay between batches (except for the last batch)
+    if (i + CONCURRENCY < assetIds.length) {
+      await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
     }
   }
 
