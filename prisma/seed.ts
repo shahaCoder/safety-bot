@@ -59,7 +59,7 @@ interface DriverSeedData {
       name: 'PTI TEST EN',
       chatId: -1003214745822,
       language: 'en',
-      trucks: ['Truck 195'],
+      trucks: ['Truck 14'],
     },
     {
       id: 8,
@@ -199,6 +199,14 @@ function mapLanguage(lang: 'en' | 'ru' | 'uz'): ChatLanguage {
 async function main() {
   console.log('🌱 Starting database seed...');
 
+  // Collect all valid truck names from seed data
+  const allValidTruckNames = new Set<string>();
+  for (const driver of driverSeeds) {
+    for (const truckName of driver.trucks) {
+      allValidTruckNames.add(truckName);
+    }
+  }
+
   for (const driver of driverSeeds) {
     // Upsert Chat - use telegramChatId as unique identifier
     const chat = await prisma.chat.upsert({
@@ -219,7 +227,13 @@ async function main() {
 
     console.log(`✅ Upserted Chat: ${chat.name} (ID: ${chat.id}, telegramChatId: ${chat.telegramChatId})`);
 
+    // Get existing trucks for this chat
+    const existingTrucks = await prisma.truck.findMany({
+      where: { chatId: chat.id },
+    });
+
     // Upsert each Truck for this Chat
+    const validTruckNamesForChat = new Set(driver.trucks);
     for (const truckName of driver.trucks) {
       const truck = await prisma.truck.upsert({
         where: {
@@ -236,6 +250,27 @@ async function main() {
       });
 
       console.log(`  ✅ Upserted Truck: ${truck.name} → Chat ID: ${truck.chatId}`);
+    }
+
+    // Remove trucks that are no longer in the seed data for this chat
+    for (const existingTruck of existingTrucks) {
+      if (!validTruckNamesForChat.has(existingTruck.name)) {
+        await prisma.truck.delete({
+          where: { name: existingTruck.name },
+        });
+        console.log(`  🗑️  Deleted old Truck: ${existingTruck.name} (no longer in seed data for this chat)`);
+      }
+    }
+  }
+
+  // Remove trucks that are not in any seed data at all
+  const allTrucks = await prisma.truck.findMany();
+  for (const truck of allTrucks) {
+    if (!allValidTruckNames.has(truck.name)) {
+      await prisma.truck.delete({
+        where: { name: truck.name },
+      });
+      console.log(`  🗑️  Deleted orphaned Truck: ${truck.name} (not in seed data)`);
     }
   }
 
