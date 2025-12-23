@@ -1,5 +1,4 @@
 import { PrismaClient, ChatLanguage } from '@prisma/client';
-import { log } from 'node:console';
 
 const prisma = new PrismaClient();
 
@@ -287,6 +286,6 @@ main()
     await prisma.$disconnect();
   });
 
-  const alertMsg  (text: string) => {
-    log
+  const alertMsg = (text: string) => {
+   return  console.log(text);
   }
