@@ -85,7 +85,7 @@ interface DriverSeedData {
     {
       id: 11,
       name: 'PTI TEST UZ',
-      chatId: -1003388481064,
+      chatId: -1003474651531,
       language: 'uz',
       trucks: ['Truck 710'],
     },
@@ -122,7 +122,7 @@ interface DriverSeedData {
       name: 'PTI TEST EN',
       chatId: -1003449100289,
       language: 'en',
-      trucks: ['Truck 6974'],
+      trucks: ['Truck 6974'], 
     },
     {
       id: 17,
@@ -164,7 +164,7 @@ interface DriverSeedData {
       name: 'PTI TEST UZ',
       chatId: -5079696595,
       language: 'uz',
-      trucks: ['Truck 707'],
+      trucks: ['Truck 710'],
     },
     {
       id: 23,
